@@ -45,3 +45,28 @@ describe("parseIdDate", () => {
     expect(parseIdDate("tgl 20", TODAY)).toBe("2026-10-20");
   });
 });
+
+// Dates as printed on receipts and m-banking screenshots.
+describe("parseIdDate on receipt timestamps", () => {
+  it.each([
+    ["2026-11-12 14:03", "2026-11-12"],
+    ["2026-11-10T09:15:00", "2026-11-10"],
+    ["12/11/2026 14:03:22", "2026-11-12"],
+    ["12 Nov 2026 14:03 WIB", "2026-11-12"],
+    ["10 Dec 2025", "2025-12-10"],
+    ["5 Oct", "2026-10-05"],
+    ["3 May 2026", "2026-05-03"],
+    ["17 Aug 2026", "2026-08-17"],
+    ["Nov 10, 2026", "2026-11-10"],
+    ["Selasa, 10 November 2026", "2026-11-10"],
+  ])("%s -> %s", (input, expected) => {
+    expect(parseIdDate(input, TODAY)).toBe(expected);
+  });
+});
+
+// Javanese and Sundanese "yesterday", common in voice notes.
+describe("parseIdDate regional words", () => {
+  it.each([["wingi", "2026-11-11"], ["kamari", "2026-11-11"], ["wingi sore", "2026-11-11"]])("%s -> %s", (input, expected) => {
+    expect(parseIdDate(input, TODAY)).toBe(expected);
+  });
+});

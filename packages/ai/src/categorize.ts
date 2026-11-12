@@ -44,6 +44,14 @@ function fitsKind(kind: string, a: Account | undefined): boolean {
   return false;
 }
 
+function ruleFor(text: string, kind: string, rules: CategoryRule[], byCode: Map<string, Account>): string | undefined {
+  const haystack = ` ${text.toLowerCase()} `;
+  const hit = rules
+    .filter((r) => r.kind === kind && haystack.includes(r.pattern))
+    .sort((a, b) => b.pattern.length - a.pattern.length)[0];
+  return hit && fitsKind(kind, byCode.get(hit.accountCode)) ? hit.accountCode : undefined;
+}
+
 export function categorize(
   entry: NormalizedEntry,
   rules: CategoryRule[],
@@ -51,15 +59,32 @@ export function categorize(
 ): { accountCode: string | undefined; source: "rule" | "model" | "default" } {
   if (entry.kind !== "sale" && entry.kind !== "expense") return { accountCode: undefined, source: "default" };
   const byCode = new Map(accounts.map((a) => [a.code, a]));
-  const haystack = ` ${[entry.description, ...entry.items.map((i) => i.name)].join(" ").toLowerCase()} `;
-
-  const hit = rules
-    .filter((r) => r.kind === entry.kind && haystack.includes(r.pattern))
-    .sort((a, b) => b.pattern.length - a.pattern.length)[0];
-  if (hit && fitsKind(entry.kind, byCode.get(hit.accountCode))) return { accountCode: hit.accountCode, source: "rule" };
+  const hit = ruleFor([entry.description, ...entry.items.map((i) => i.name)].join(" "), entry.kind, rules, byCode);
+  if (hit) return { accountCode: hit, source: "rule" };
 
   const suggested = accounts.find((a) => a.name === entry.suggestedCategory);
   if (suggested && fitsKind(entry.kind, suggested)) return { accountCode: suggested.code, source: "model" };
 
   return { accountCode: undefined, source: "default" };
+}
+
+/**
+ * Per-item categories for one receipt with items in different categories
+ * (Flow B: "ayam 175rb, token listrik 100rb"). Items without a rule take the
+ * entry's category. Returns null unless a split is both needed and exact:
+ * every item total known and summing to the entry amount.
+ */
+export function categorizeItems(
+  entry: NormalizedEntry,
+  entryAccountCode: string,
+  rules: CategoryRule[],
+  accounts: Account[],
+): string[] | null {
+  if (entry.kind !== "sale" && entry.kind !== "expense") return null;
+  if (entry.items.length < 2 || entry.amountIdr === null) return null;
+  if (entry.items.some((i) => i.lineTotalIdr === null)) return null;
+  if (entry.items.reduce((s, i) => s + i.lineTotalIdr!, 0n) !== entry.amountIdr) return null;
+  const byCode = new Map(accounts.map((a) => [a.code, a]));
+  const codes = entry.items.map((i) => ruleFor(i.name, entry.kind, rules, byCode) ?? entryAccountCode);
+  return new Set(codes).size > 1 ? codes : null;
 }

@@ -11,7 +11,15 @@ export interface CardEntry {
   counterparty: string | null;
   paymentMethod: string;
   categoryName: string | null;
-  items: Array<{ name: string; qtyText: string | null; unit: string | null; unitPriceIdr: bigint | null; lineTotalIdr: bigint | null }>;
+  items: Array<{
+    name: string;
+    qtyText: string | null;
+    unit: string | null;
+    unitPriceIdr: bigint | null;
+    lineTotalIdr: bigint | null;
+    /** Set when items post to different categories. */
+    categoryName?: string | null;
+  }>;
   lowConfidence: FieldName[];
 }
 
@@ -64,18 +72,20 @@ function entryBlock(e: CardEntry): string {
   if (showItems) {
     for (const i of e.items) {
       const total = i.lineTotalIdr !== null ? formatRupiah(i.lineTotalIdr) : "";
+      const cat = i.categoryName ? ` (${i.categoryName})` : "";
       if (i.qtyText && i.unitPriceIdr !== null) {
         // "• nasi box 25 x Rp 18.000 = Rp 450.000"
         const unit = i.unit ? ` ${i.unit}` : "";
-        lines.push(`• ${i.name} ${i.qtyText}${unit} x ${formatRupiah(i.unitPriceIdr)} = ${total}`);
+        lines.push(`• ${i.name} ${i.qtyText}${unit} x ${formatRupiah(i.unitPriceIdr)} = ${total}${cat}`);
       } else {
         // "• ayam 5 kilo Rp 175.000"
         const qty = i.qtyText ? ` ${i.qtyText}${i.unit ? ` ${i.unit}` : ""}` : "";
-        lines.push(`• ${i.name}${qty}${total ? ` ${total}` : ""}`);
+        lines.push(`• ${i.name}${qty}${total ? ` ${total}` : ""}${cat}`);
       }
     }
   }
-  if (e.categoryName) lines.push(`Kategori: ${e.categoryName}`);
+  const split = e.items.some((i) => i.categoryName);
+  if (e.categoryName && !split) lines.push(`Kategori: ${e.categoryName}`);
   return lines.join("\n");
 }
 

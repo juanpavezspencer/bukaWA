@@ -4,6 +4,12 @@ import type { z } from "zod/v4";
 import { maskSensitiveIds } from "@bukuwa/idn";
 import type { Effort } from "./config.js";
 
+/** An image or PDF sent alongside the text. Images can't be masked; see vision.ts. */
+export interface Attachment {
+  mediaType: string;
+  data: Uint8Array;
+}
+
 export interface StructuredRequest<T> {
   model: string;
   effort: Effort;
@@ -11,6 +17,8 @@ export interface StructuredRequest<T> {
   system: string;
   /** Per-request content. NIK/NPWP are masked before sending. */
   user: string;
+  /** Placed before the text, as the API recommends for images. */
+  attachments?: Attachment[];
   schema: z.ZodType<T>;
   maxTokens: number;
 }
@@ -39,6 +47,17 @@ export class ModelOutputError extends Error {
   }
 }
 
+function toBlock(a: Attachment): Anthropic.ImageBlockParam | Anthropic.DocumentBlockParam {
+  const data = Buffer.from(a.data).toString("base64");
+  if (a.mediaType === "application/pdf") {
+    return { type: "document", source: { type: "base64", media_type: "application/pdf", data } };
+  }
+  return {
+    type: "image",
+    source: { type: "base64", media_type: a.mediaType as "image/jpeg" | "image/png" | "image/webp" | "image/gif", data },
+  };
+}
+
 export function anthropicModel(client: Anthropic = new Anthropic()): StructuredModel {
   return {
     async generate<T>(req: StructuredRequest<T>): Promise<StructuredResult<T>> {
@@ -47,7 +66,7 @@ export function anthropicModel(client: Anthropic = new Anthropic()): StructuredM
         max_tokens: req.maxTokens,
         output_config: { effort: req.effort, format: zodOutputFormat(req.schema) },
         system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
-        messages: [{ role: "user", content: maskSensitiveIds(req.user) }],
+        messages: [{ role: "user", content: [...(req.attachments ?? []).map(toBlock), { type: "text", text: maskSensitiveIds(req.user) }] }],
       });
       if (response.stop_reason === "refusal") {
         throw new ModelRefusalError(response.stop_details?.category ?? null);

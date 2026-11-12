@@ -21,3 +21,25 @@ export interface TextCase {
   oracle?: Omit<RawExtraction, "entries"> & { entries: Array<Omit<RawExtraction["entries"][number], "confidence">> };
   tags: string[];
 }
+
+export interface ExpectedDocEntry {
+  kind: string;
+  amount_idr: string;
+  date: string;
+  /** Sender for money in; store/supplier/recipient for money out. Matched loosely. */
+  counterparty: string | null;
+  payment_method: string | null;
+}
+
+/** One photo/PDF case. `file` is relative to evals/datasets/images/ (.svg is rendered to PNG at run time). */
+export interface ImageCase {
+  id: string;
+  file: string;
+  today: string;
+  business_name: string;
+  caption?: string;
+  expected: { is_document: boolean; entries?: ExpectedDocEntry[] };
+  /** The exact text drawn on a synthetic image and the spans an ideal reader would copy. */
+  oracle?: { visible_text: string; entries: Array<Omit<RawExtraction["entries"][number], "confidence">> };
+  tags: string[];
+}

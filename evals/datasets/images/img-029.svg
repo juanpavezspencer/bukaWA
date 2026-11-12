@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="244" viewBox="0 0 420 244">
+<rect width="100%" height="100%" fill="#e9e9e9"/>
+<g><rect x="4" y="4" width="412" height="236" fill="#ffffff" rx="6"/><rect width="420" height="8" fill="#6b5bd2"/>
+<g font-family="Helvetica, Arial, sans-serif" fill="#1b1b1b">
+<text x="24" y="40" font-size="18" font-weight="700" text-anchor="start">OVO</text>
+<text x="210" y="74" font-size="20" font-weight="700" text-anchor="middle">Pembayaran Berhasil</text>
+<text x="210" y="104" font-size="24" font-weight="700" text-anchor="middle">-Rp 16.000,00</text>
+<text x="24" y="146" font-size="16" font-weight="400" text-anchor="start">Dibayar ke</text>
+<text x="396" y="146" font-size="16" font-weight="400" text-anchor="end">AGEN TELUR PAK HARUN</text>
+<text x="24" y="172" font-size="16" font-weight="400" text-anchor="start">Tanggal</text>
+<text x="396" y="172" font-size="16" font-weight="400" text-anchor="end">11 Nov 2026, 12:01</text>
+<text x="24" y="198" font-size="16" font-weight="400" text-anchor="start">Sumber dana</text>
+<text x="396" y="198" font-size="16" font-weight="400" text-anchor="end">Saldo OVO</text>
+</g></g></svg>

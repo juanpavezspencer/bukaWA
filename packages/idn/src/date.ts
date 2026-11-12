@@ -10,10 +10,11 @@ const WEEKDAYS: Record<string, number> = {
   minggu: 0, ahad: 0, senin: 1, selasa: 2, rabu: 3, kamis: 4, jumat: 5, sabtu: 6,
 };
 
+// Indonesian plus the English forms printed on many receipts and bank apps.
 const MONTHS: Array<[RegExp, number]> = [
-  [/^jan(uari)?$/, 1], [/^feb(ruari)?$/, 2], [/^mar(et)?$/, 3], [/^apr(il)?$/, 4],
-  [/^mei$/, 5], [/^jun(i)?$/, 6], [/^jul(i)?$/, 7], [/^agu?s(tus)?$/, 8],
-  [/^sep(t(ember)?)?$/, 9], [/^okt(ober)?$/, 10], [/^nov(ember)?$/, 11], [/^des(ember)?$/, 12],
+  [/^jan(uari|uary)?$/, 1], [/^feb(ruari|ruary)?$/, 2], [/^mar(et|ch)?$/, 3], [/^apr(il)?$/, 4],
+  [/^(mei|may)$/, 5], [/^jun[ie]?$/, 6], [/^jul[iy]?$/, 7], [/^(agu?s(tus)?|aug(ust)?)$/, 8],
+  [/^sep(t(ember)?)?$/, 9], [/^(okt(ober)?|oct(ober)?)$/, 10], [/^nov(ember)?$/, 11], [/^(des(ember)?|dec(ember)?)$/, 12],
 ];
 
 function toUtc(iso: string): Date {
@@ -49,12 +50,13 @@ export function parseIdDate(input: string, todayIso: string): string | null {
   if (/\b(besok|lusa|depan|nanti)\b/.test(s)) return null;
 
   if (/\b(hari ini|tadi|td|barusan|skrg|sekarang)\b/.test(s)) return fmt(today);
-  if (/\b(kemarin|kemaren|kmrn|kmarin|kmren)\b/.test(s)) return fmt(new Date(today.getTime() - DAY_MS));
+  if (/\b(kemarin|kemaren|kmrn|kmarin|kmren|wingi|kamari)\b/.test(s)) return fmt(new Date(today.getTime() - DAY_MS));
 
   let m = /\b(\d{1,2}) hari (yang |yg )?lalu\b/.exec(s);
   if (m) return fmt(new Date(today.getTime() - Number(m[1]) * DAY_MS));
 
-  m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  // ISO, possibly with a time ("2026-11-12 14:03", "2026-11-12T14:03:00")
+  m = /(?:^|\D)(\d{4})-(\d{2})-(\d{2})(?!\d)/.exec(s);
   if (m) {
     const dt = make(Number(m[1]), Number(m[2]), Number(m[3]));
     return dt && dt <= today ? fmt(dt) : null;
@@ -80,6 +82,16 @@ export function parseIdDate(input: string, todayIso: string): string | null {
     const mo = month(m[2]!);
     if (mo) {
       const dt = m[3] ? make(Number(m[3]), mo, Number(m[1])) : dayMonth(today, Number(m[1]), mo);
+      return dt && dt <= today ? fmt(dt) : null;
+    }
+  }
+
+  // "Nov 10, 2026" (English order)
+  m = /\b([a-z]+) (\d{1,2}),? (\d{4})\b/.exec(s);
+  if (m) {
+    const mo = month(m[1]!);
+    if (mo) {
+      const dt = make(Number(m[3]), mo, Number(m[2]));
       return dt && dt <= today ? fmt(dt) : null;
     }
   }

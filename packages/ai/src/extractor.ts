@@ -53,7 +53,7 @@ const Item = z.object({
   line_total_text: z.string().nullable(),
 });
 
-const Entry = z.object({
+export const Entry = z.object({
   kind: z.enum(ENTRY_KINDS),
   description: z.string(),
   amount_text: z.string().nullable(),

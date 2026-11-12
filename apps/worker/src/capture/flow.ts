@@ -1,6 +1,6 @@
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { accounts, captures, categoryRules, type Tx } from "@bukuwa/db";
-import { categorize, patternsFor, type Account, type NormalizedEntry, type RawExtraction } from "@bukuwa/ai";
+import { categorize, categorizeItems, normalizePattern, patternsFor, type Account, type NormalizedEntry, type RawExtraction } from "@bukuwa/ai";
 import { formatRupiah } from "@bukuwa/idn";
 import { buildJournalDraft, daySummary, postJournal } from "@bukuwa/ledger";
 import type { OutboundMessage } from "@bukuwa/wa";
@@ -26,7 +26,15 @@ export interface StoredEntry {
   date: string;
   counterparty: string | null;
   paymentMethod: string | null;
-  items: Array<{ name: string; qtyText: string | null; unit: string | null; unitPriceIdr: string | null; lineTotalIdr: string | null }>;
+  items: Array<{
+    name: string;
+    qtyText: string | null;
+    unit: string | null;
+    unitPriceIdr: string | null;
+    lineTotalIdr: string | null;
+    /** Set only when the entry is split across categories. */
+    accountCode?: string | null;
+  }>;
   accountCode: string | null;
   categorySource: "rule" | "model" | "default";
   lowConfidence: NormalizedEntry["lowConfidence"];
@@ -34,7 +42,11 @@ export interface StoredEntry {
 }
 
 export interface StoredCapture {
-  routerModelVersion: string;
+  /** Text router version; null for photos (no routing). */
+  routerModelVersion: string | null;
+  /** Photos: what the vision model read (masked). */
+  documentType?: string;
+  visibleText?: string;
   raw: RawExtraction;
   entries: StoredEntry[];
   notes: string[];
@@ -46,7 +58,14 @@ async function loadAccounts(tx: Tx): Promise<Array<Account & { id: string }>> {
   return tx.select({ id: accounts.id, code: accounts.code, name: accounts.name, type: accounts.type }).from(accounts);
 }
 
-function toStored(e: NormalizedEntry, accountCode: string | undefined, source: StoredEntry["categorySource"]): StoredEntry {
+const DEFAULT_CATEGORY: Record<string, string> = { sale: "4100", expense: "6900" };
+
+function toStored(
+  e: NormalizedEntry,
+  accountCode: string | undefined,
+  source: StoredEntry["categorySource"],
+  itemCodes: string[] | null,
+): StoredEntry {
   return {
     kind: e.kind,
     description: e.description,
@@ -54,7 +73,12 @@ function toStored(e: NormalizedEntry, accountCode: string | undefined, source: S
     date: e.date,
     counterparty: e.counterparty,
     paymentMethod: e.paymentMethod,
-    items: e.items.map((i) => ({ ...i, unitPriceIdr: i.unitPriceIdr?.toString() ?? null, lineTotalIdr: i.lineTotalIdr?.toString() ?? null })),
+    items: e.items.map((i, n) => ({
+      ...i,
+      unitPriceIdr: i.unitPriceIdr?.toString() ?? null,
+      lineTotalIdr: i.lineTotalIdr?.toString() ?? null,
+      ...(itemCodes ? { accountCode: itemCodes[n]! } : {}),
+    })),
     accountCode: accountCode ?? null,
     categorySource: source,
     lowConfidence: e.lowConfidence,
@@ -76,12 +100,22 @@ function cardEntries(stored: StoredCapture, accts: Account[]): CardEntry[] {
       : e.kind === "expense" ? nameByCode.get(e.accountCode ?? "6900") ?? null
       : null,
     items: e.items.map((i) => ({
-      ...i,
+      name: i.name,
+      qtyText: i.qtyText,
+      unit: i.unit,
       unitPriceIdr: i.unitPriceIdr === null ? null : BigInt(i.unitPriceIdr),
       lineTotalIdr: i.lineTotalIdr === null ? null : BigInt(i.lineTotalIdr),
+      categoryName: splitsFor(e) && i.accountCode ? nameByCode.get(i.accountCode) ?? null : null,
     })),
     lowConfidence: e.lowConfidence,
   }));
+}
+
+/** Category splits for posting, only if still exact (the owner may have typed a different amount). */
+function splitsFor(e: StoredEntry): Array<{ accountCode: string; amountIdr: bigint }> | undefined {
+  if (e.amountIdr === null || e.items.length < 2 || !e.items.every((i) => i.accountCode && i.lineTotalIdr !== null)) return undefined;
+  const splits = e.items.map((i) => ({ accountCode: i.accountCode!, amountIdr: BigInt(i.lineTotalIdr!) }));
+  return splits.reduce((s, x) => s + x.amountIdr, 0n) === BigInt(e.amountIdr) ? splits : undefined;
 }
 
 /** Decide the next status and reply for a capture whose entries are stored. */
@@ -109,9 +143,16 @@ async function advance(tx: Tx, captureId: string, stored: StoredCapture): Promis
 export interface NewCapture {
   businessId: string;
   waMessageId: string;
-  text: string;
+  source: "text" | "photo" | "voice";
+  /** Typed text, or the photo caption. */
+  text: string | null;
+  mediaUrl?: string;
+  /** Voice: the (masked) transcript. */
+  transcript?: string;
+  /** Photos: document type and masked transcription, kept for review and evals. */
+  document?: { type: string; visibleText: string };
   modelVersion: string;
-  routerModelVersion: string;
+  routerModelVersion: string | null;
   raw: RawExtraction;
   entries: NormalizedEntry[];
 }
@@ -139,10 +180,15 @@ export async function createCapture(tx: Tx, c: NewCapture): Promise<OutboundMess
 
   const stored: StoredCapture = {
     routerModelVersion: c.routerModelVersion,
+    ...(c.document ? { documentType: c.document.type, visibleText: c.document.visibleText } : {}),
     raw: c.raw,
     entries: supported.map((e) => {
       const cat = categorize(e, rules, accts);
-      return toStored(e, cat.accountCode, cat.source);
+      // Items without their own rule take the model's suggestion (or the default),
+      // not a rule that matched some other item on the same receipt.
+      const fallback = categorize(e, [], accts).accountCode ?? DEFAULT_CATEGORY[e.kind];
+      const itemCodes = fallback ? categorizeItems(e, fallback, rules, accts) : null;
+      return toStored(e, cat.accountCode, cat.source, itemCodes);
     }),
     notes,
   };
@@ -153,8 +199,10 @@ export async function createCapture(tx: Tx, c: NewCapture): Promise<OutboundMess
     .values({
       businessId: c.businessId,
       waMessageId: c.waMessageId,
-      source: "text",
+      source: c.source,
       rawText: c.text,
+      mediaUrl: c.mediaUrl ?? null,
+      transcript: c.transcript ?? null,
       extractionJson: stored,
       confidence: confidences.length ? Math.min(...confidences) : null,
       status: supported.length ? "extracted" : "failed",
@@ -250,9 +298,10 @@ export async function confirmCapture(
       amountIdr: BigInt(e.amountIdr!),
       date: e.date,
       description: e.description,
-      source: "text",
+      source: row.source,
       paymentMethod: e.paymentMethod,
       accountCode: e.accountCode ?? undefined,
+      splits: splitsFor(e),
       counterparty: e.counterparty,
       idempotencyKey: `capture:${row.id}:${i}`,
       createdBy: ctx.userId,
@@ -265,14 +314,26 @@ export async function confirmCapture(
   const accts = await loadAccounts(tx);
   const idByCode = new Map(accts.map((a) => [a.code, a.id]));
   for (const e of stored.entries) {
-    if ((e.kind !== "sale" && e.kind !== "expense") || !e.accountCode) continue;
-    for (const pattern of patternsFor({ items: e.items.map((it) => ({ ...it, unitPriceIdr: null, lineTotalIdr: null })), description: e.description })) {
+    if (e.kind !== "sale" && e.kind !== "expense") continue;
+    const split = splitsFor(e) !== undefined;
+    // Learn from split items individually; otherwise only an explicit entry category is worth a rule.
+    const learn: Array<{ text: string; code: string }> = split
+      ? e.items.map((i) => ({ text: i.name, code: i.accountCode! }))
+      : e.accountCode
+        ? patternsFor({ items: e.items.map((it) => ({ ...it, unitPriceIdr: null, lineTotalIdr: null })), description: e.description }).map(
+            (p) => ({ text: p, code: e.accountCode! }),
+          )
+        : [];
+    for (const { text, code } of learn) {
+      const pattern = split ? normalizePattern(text) : text;
+      const accountId = idByCode.get(code);
+      if (!pattern || !accountId) continue;
       await tx
         .insert(categoryRules)
-        .values({ businessId: ctx.businessId, pattern, kind: e.kind, accountId: idByCode.get(e.accountCode)! })
+        .values({ businessId: ctx.businessId, pattern, kind: e.kind, accountId })
         .onConflictDoUpdate({
           target: [categoryRules.businessId, categoryRules.pattern, categoryRules.kind],
-          set: { accountId: idByCode.get(e.accountCode)!, hits: sql`${categoryRules.hits} + 1`, updatedAt: sql`now()` },
+          set: { accountId, hits: sql`${categoryRules.hits} + 1`, updatedAt: sql`now()` },
         });
     }
   }

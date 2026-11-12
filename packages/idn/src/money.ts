@@ -2,9 +2,10 @@
  * Indonesian money parsing. Integer rupiah as bigint only; no floats anywhere,
  * decimals like "1,5jt" are resolved with integer arithmetic.
  *
- * Milestone 1 scope: a whole input that is just an amount (onboarding answers).
- * Finding amounts inside free text is milestone 2.
+ * Parses a whole input that is just an amount ("18rb", "1,5jt", or spelled out
+ * like "seratus ribu" from a voice transcript). Not for amounts inside free text.
  */
+import { parseSpokenNumber } from "./spoken.js";
 
 const MULTIPLIERS: Record<string, bigint> = {
   rb: 1_000n,
@@ -54,21 +55,24 @@ function toRupiah(num: string, mult: bigint | undefined): bigint | null {
 export function parseRupiah(input: string): bigint | null {
   let s = input.toLowerCase().trim();
   s = s.replace(/^(rp\.?|idr)\s*/, "").replace(/\s*(rupiah|,-|\.-)$/, "").trim();
+  // Printed zero cents: "450.000,00", "450,000.00" (decimal sep differs from grouping).
+  s = s.replace(/^(\d{1,3}(?:([.,])\d{3})+)(?!\2)[.,]00$/, "$1");
+  const spoken = /[a-z]/.test(s) ? parseSpokenNumber(s) : null;
   for (const [re, rep] of SLANG) s = s.replace(re, rep);
-  if (!s) return null;
+  if (!s) return spoken;
 
   let total = 0n;
   let tokens = 0;
   while (s.length > 0) {
     const m = TOKEN.exec(s);
-    if (!m) return null;
+    if (!m) return spoken;
     const value = toRupiah(m[1]!, m[2] ? MULTIPLIERS[m[2]] : undefined);
-    if (value === null) return null;
+    if (value === null) return spoken;
     total += value;
     tokens++;
     s = s.slice(m[0].length);
   }
-  return tokens > 0 ? total : null;
+  return tokens > 0 ? total : spoken;
 }
 
 export function formatRupiah(n: bigint): string {

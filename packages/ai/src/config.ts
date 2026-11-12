@@ -6,6 +6,11 @@ export interface AiConfig {
   routerEffort: Effort;
   extractorModel: string;
   extractorEffort: Effort;
+  /** Photos and PDFs (receipts, transfer screenshots, invoices). */
+  visionModel: string;
+  visionEffort: Effort;
+  /** Largest image (bytes) sent to the vision model; the API caps images at 5 MB. */
+  visionMaxImageBytes: number;
   /** Fields with model confidence below this are flagged on the confirm card. */
   lowConfidenceThreshold: number;
 }
@@ -23,6 +28,9 @@ export function aiConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AiConfig 
     routerEffort: effort(env.AI_ROUTER_EFFORT, "low"),
     extractorModel: env.AI_EXTRACTOR_MODEL ?? "claude-haiku-5-5",
     extractorEffort: effort(env.AI_EXTRACTOR_EFFORT, "low"),
+    visionModel: env.AI_VISION_MODEL ?? "claude-sonnet-5-5",
+    visionEffort: effort(env.AI_VISION_EFFORT, "low"),
+    visionMaxImageBytes: Number(env.AI_VISION_MAX_IMAGE_BYTES ?? 5 * 1024 * 1024),
     lowConfidenceThreshold: Number.isFinite(threshold) ? threshold : 0.7,
   };
 }

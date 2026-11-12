@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="261" viewBox="0 0 400 261">
+<rect width="100%" height="100%" fill="#e9e9e9"/>
+<g transform="rotate(3 200 130.5)"><rect x="4" y="4" width="392" height="253" fill="#fdf8e4" rx="6"/>
+<g font-family="Bradley Hand, Chalkboard, Comic Sans MS, cursive" fill="#1f3b8a">
+<text x="200" y="36" font-size="22" font-weight="700" text-anchor="middle">NOTA</text>
+<text x="24" y="68" font-size="17" font-weight="400" text-anchor="start">Tgl: 10/11/26</text>
+<text x="24" y="95" font-size="17" font-weight="400" text-anchor="start">Kepada: Bu Ani</text>
+<text x="24" y="122" font-size="17" font-weight="400" text-anchor="start">30 Tumpeng mini @35.000</text>
+<text x="376" y="122" font-size="17" font-weight="400" text-anchor="end">1.050.000</text>
+<text x="24" y="149" font-size="17" font-weight="400" text-anchor="start">10 Es teh @5.000</text>
+<text x="376" y="149" font-size="17" font-weight="400" text-anchor="end">50.000</text>
+<text x="24" y="182" font-size="18" font-weight="700" text-anchor="start">Jumlah</text>
+<text x="376" y="182" font-size="18" font-weight="700" text-anchor="end">Rp 1.100.000</text>
+<text x="24" y="214" font-size="17" font-weight="400" text-anchor="start">LUNAS - cash</text>
+</g></g></svg>

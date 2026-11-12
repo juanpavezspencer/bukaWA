@@ -3,3 +3,4 @@ export * from "./date.js";
 export * from "./payment.js";
 export * from "./mask.js";
 export * from "./qty.js";
+export * from "./spoken.js";

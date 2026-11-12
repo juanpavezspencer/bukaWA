@@ -69,3 +69,20 @@ describe("formatRupiah", () => {
     expect(formatRupiah(n)).toBe(s);
   });
 });
+
+// Amounts as printed on receipts, with zero cents.
+describe("parseRupiah on printed amounts", () => {
+  it.each([
+    ["450.000,00", 450_000n],
+    ["Rp 1.250.000,00", 1_250_000n],
+    ["IDR 450,000.00", 450_000n],
+    ["Rp450.000", 450_000n],
+    ["Rp 35.500", 35_500n],
+  ])("%s -> %s", (input, expected) => {
+    expect(parseRupiah(input)).toBe(expected);
+  });
+
+  it("rejects non-zero cents", () => {
+    expect(parseRupiah("450.000,50")).toBeNull();
+  });
+});
