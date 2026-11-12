@@ -280,6 +280,36 @@ export const auditLog = pgTable(
 );
 
 /**
+ * Per-business learned categories ("ayam" -> HPP / Bahan baku). Written when
+ * the owner confirms an entry; checked before asking the model.
+ */
+export const categoryRules = pgTable(
+  "category_rules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    /** Normalized keyword, lowercase. */
+    pattern: text("pattern").notNull(),
+    /** Entry kind the rule applies to ("sale" or "expense"). */
+    kind: text("kind").notNull(),
+    accountId: uuid("account_id").notNull(),
+    hits: integer("hits").notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("category_rules_business_pattern_kind_uq").on(t.businessId, t.pattern, t.kind),
+    foreignKey({
+      name: "category_rules_account_fk",
+      columns: [t.accountId, t.businessId],
+      foreignColumns: [accounts.id, accounts.businessId],
+    }),
+  ],
+);
+
+/**
  * Raw inbound WhatsApp messages, written by the webhook before the sender is
  * resolved to a business. Not tenant-scoped (sender may not be onboarded yet),
  * so it has no RLS; only the webhook/worker roles can touch it.
@@ -319,4 +349,5 @@ export const TENANT_TABLES = [
   "captures",
   "messages",
   "audit_log",
+  "category_rules",
 ] as const;

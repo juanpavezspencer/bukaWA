@@ -29,6 +29,20 @@
       "when": 1794498917106,
       "tag": "0003_onboarding_access",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794500461705,
+      "tag": "0004_category_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794500461967,
+      "tag": "0005_category_rules_rls",
+      "breakpoints": true
     }
   ]
 }

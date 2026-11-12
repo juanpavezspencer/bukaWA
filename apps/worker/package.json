@@ -11,6 +11,7 @@
     "dev:chat": "tsx dev/chat.ts"
   },
   "dependencies": {
+    "@bukuwa/ai": "workspace:*",
     "@bukuwa/db": "workspace:*",
     "@bukuwa/idn": "workspace:*",
     "@bukuwa/ledger": "workspace:*",

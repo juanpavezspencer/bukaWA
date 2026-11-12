@@ -244,3 +244,23 @@ export async function trialBalance(tx: Tx, businessId: string, opts: TrialBalanc
     balances.map((r) => ({ ...r, debit: BigInt(r.debit), credit: BigInt(r.credit) })),
   );
 }
+
+export interface DaySummary {
+  incomeIdr: bigint;
+  expenseIdr: bigint;
+}
+
+/** Income and expenses posted for one calendar date (reversals net out). */
+export async function daySummary(tx: Tx, businessId: string, date: string): Promise<DaySummary> {
+  await assertScope(tx, businessId);
+  const [r] = await tx
+    .select({
+      income: sql<string>`coalesce(sum(case when ${accounts.type} = 'income' then ${journalLines.credit} - ${journalLines.debit} end), 0)::text`,
+      expense: sql<string>`coalesce(sum(case when ${accounts.type} = 'expense' then ${journalLines.debit} - ${journalLines.credit} end), 0)::text`,
+    })
+    .from(journalLines)
+    .innerJoin(journals, eq(journals.id, journalLines.journalId))
+    .innerJoin(accounts, eq(accounts.id, journalLines.accountId))
+    .where(and(eq(journals.businessId, businessId), eq(journals.date, date)));
+  return { incomeIdr: BigInt(r?.income ?? "0"), expenseIdr: BigInt(r?.expense ?? "0") };
+}
