@@ -20,6 +20,7 @@ import { createTestDb } from "@bukuwa/db/testing";
 import { trialBalance } from "@bukuwa/ledger";
 import type { OutboundMessage, WaSender } from "@bukuwa/wa";
 import { processInbound, type InboundDeps } from "../src/inbound.js";
+import { aiConfig, ScriptedModel } from "./fake-model.js";
 
 const keys = piiKeysFromBase64(randomBytes(32).toString("base64"), randomBytes(32).toString("base64"));
 const RINA = "6281234567890";
@@ -50,6 +51,7 @@ beforeEach(async () => {
     db,
     sender,
     keys,
+    ai: { model: new ScriptedModel(), config: aiConfig },
     config: { privacyPolicyUrl: "https://bukuwa.id/privasi", consentVersion: "2026-11-v1", trialDays: 14, timezone: "Asia/Jakarta" },
     now: () => NOW,
     log: () => {},
@@ -178,12 +180,18 @@ describe("WhatsApp onboarding (F1)", () => {
 
   it("recognises an onboarded owner and logs the conversation to messages", async () => {
     await onboardRina();
-    const id = await say({ text: "jual nasi box 25 x 18rb" });
-    expect(sender.lastBody()).toMatch(/sudah aku terima/);
+    (deps.ai.model as ScriptedModel).set("makasih ya", { intent: "chitchat" });
+    const id = await say({ text: "makasih ya" });
+    expect(sender.lastBody()).toMatch(/Kirim transaksi kapan aja/);
     expect(await db.select().from(onboardingSessions)).toEqual([]);
     const bizId = await rinaBusinessId();
     const logged = await withBusiness(db, bizId, (tx) => tx.select().from(messages).where(eq(messages.waMessageId, id)));
-    expect(logged).toMatchObject([{ direction: "inbound", body: "jual nasi box 25 x 18rb" }]);
+    expect(logged).toMatchObject([{ direction: "inbound", body: "makasih ya" }]);
+  });
+
+  it("never calls the model during onboarding", async () => {
+    await onboardRina();
+    expect((deps.ai.model as ScriptedModel).calls).toEqual([]);
   });
 
   it("still marks the message processed when the reply fails to send", async () => {

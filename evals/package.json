@@ -1,0 +1,17 @@
+{
+  "name": "@bukuwa/evals",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "tsx src/generate-text.ts",
+    "evals": "tsx run.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.8.0",
+    "@bukuwa/ai": "workspace:*",
+    "@bukuwa/idn": "workspace:*"
+  }
+}

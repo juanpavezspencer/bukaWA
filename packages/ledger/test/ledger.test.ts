@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { accounts, auditLog, journalLines, journals, withBusiness, type Db } from "@bukuwa/db";
 import { createTestBusiness, createTestDb, expectPgError } from "@bukuwa/db/testing";
 import {
+  daySummary,
   LedgerError,
   postJournal,
   reverseJournal,
@@ -244,6 +245,30 @@ describe("trialBalance", () => {
     expect(afterByCode["1110"]).toBe(0n);
     expect(afterByCode["4100"]).toBe(0n);
     expect(afterByCode["1100"]).toBe(tbBefore.rows.find((r) => r.code === "1100")!.balance);
+  });
+
+  it("daySummary reports income and expenses for one date, net of reversals", async () => {
+    const { db: fresh } = await createTestDb();
+    const a = await createTestBusiness(fresh, "A");
+    const summary = await withBusiness(fresh, a, async (tx) => {
+      const s1 = await postJournal(tx, sale(a, 450_000n));
+      await postJournal(tx, sale(a, 50_000n, { date: "2026-11-11" }));
+      await postJournal(tx, {
+        businessId: a,
+        date: "2026-11-12",
+        description: "belanja",
+        source: "text",
+        lines: [
+          { accountCode: "5100", debit: 213_000n },
+          { accountCode: "1100", credit: 213_000n },
+        ],
+      });
+      const before = await daySummary(tx, a, "2026-11-12");
+      await reverseJournal(tx, { businessId: a, journalId: s1.id });
+      return { before, after: await daySummary(tx, a, "2026-11-12") };
+    });
+    expect(summary.before).toEqual({ incomeIdr: 450_000n, expenseIdr: 213_000n });
+    expect(summary.after).toEqual({ incomeIdr: 0n, expenseIdr: 213_000n });
   });
 
   it("is balanced across everything posted in this suite", async () => {

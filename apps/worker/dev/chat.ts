@@ -12,7 +12,12 @@ import { businesses, hashPii, onboardingSessions, piiKeysFromBase64, toE164, use
 import { createTestDb } from "@bukuwa/db/testing";
 import { trialBalance } from "@bukuwa/ledger";
 import type { OutboundMessage, WaSender } from "@bukuwa/wa";
+import { aiConfigFromEnv, anthropicModel } from "@bukuwa/ai";
 import { processInbound, type InboundDeps } from "../src/inbound.js";
+import { offlineModel } from "./offline-model.js";
+
+const useClaude = Boolean(process.env.ANTHROPIC_API_KEY);
+console.log(useClaude ? "chat simulator: using Claude" : "chat simulator: no ANTHROPIC_API_KEY, using the offline keyword stand-in (dev only)");
 
 const PORT = Number(process.env.PORT ?? 8788);
 const keys = piiKeysFromBase64(randomBytes(32).toString("base64"), randomBytes(32).toString("base64"));
@@ -36,6 +41,7 @@ async function reset() {
     db,
     sender,
     keys,
+    ai: { model: useClaude ? anthropicModel() : offlineModel, config: aiConfigFromEnv() },
     config: { privacyPolicyUrl: "https://bukuwa.id/privasi", consentVersion: "dev", trialDays: 14, timezone: "Asia/Jakarta" },
     log: (e) => console.log(JSON.stringify(e)),
   };
@@ -113,7 +119,7 @@ const PAGE = /* html */ `<!doctype html>
 </style></head>
 <body>
 <section class="chat">
-  <header><strong>BukuWA (dev)</strong>
+  <header><strong>BukuWA (dev${useClaude ? "" : ", offline model"})</strong>
     <label>Nomor <input id="from" value="6281234567890"></label>
     <button id="reset" title="Wipe the in-memory database">Reset DB</button></header>
   <div id="log"></div>

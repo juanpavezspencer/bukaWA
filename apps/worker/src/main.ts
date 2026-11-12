@@ -3,6 +3,7 @@ import pg from "pg";
 import PgBoss from "pg-boss";
 import * as schema from "@bukuwa/db";
 import { piiKeysFromBase64, type Db } from "@bukuwa/db";
+import { aiConfigFromEnv, anthropicModel } from "@bukuwa/ai";
 import { cloudApiSender, WA_INBOUND_QUEUE } from "@bukuwa/wa";
 import { loadConfig } from "./config.js";
 import { processInbound } from "./inbound.js";
@@ -19,6 +20,8 @@ const deps = {
     apiVersion: config.WA_GRAPH_API_VERSION,
   }),
   keys: piiKeysFromBase64(config.PII_HMAC_KEY, config.PII_ENC_KEY),
+  // Credentials resolve from the environment (ANTHROPIC_API_KEY or a profile).
+  ai: { model: anthropicModel(), config: aiConfigFromEnv() },
   config: {
     privacyPolicyUrl: config.PRIVACY_POLICY_URL,
     consentVersion: config.CONSENT_VERSION,

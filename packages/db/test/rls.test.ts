@@ -6,6 +6,7 @@ import {
   auditLog,
   businesses,
   captures,
+  categoryRules,
   contacts,
   journalLines,
   journals,
@@ -57,6 +58,7 @@ async function populate(businessId: string): Promise<void> {
     await tx.insert(captures).values({ businessId, source: "text", rawText: "jual 1rb", journalId: journal!.id });
     await tx.insert(messages).values({ businessId, direction: "inbound", type: "text", body: "halo" });
     await tx.insert(auditLog).values({ businessId, actor: "test", action: "create", entity: "journal" });
+    await tx.insert(categoryRules).values({ businessId, pattern: "ayam", kind: "expense", accountId: await accountId(tx, businessId, "5100") });
   });
 }
 

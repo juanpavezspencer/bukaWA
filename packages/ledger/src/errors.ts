@@ -9,7 +9,10 @@ export type LedgerErrorCode =
   | "BUSINESS_MISMATCH"
   | "NOT_FOUND"
   | "ALREADY_REVERSED"
-  | "CANNOT_REVERSE_REVERSAL";
+  | "CANNOT_REVERSE_REVERSAL"
+  | "UNSUPPORTED_KIND"
+  | "MISSING_PAYMENT_METHOD"
+  | "INVALID_CATEGORY";
 
 export class LedgerError extends Error {
   constructor(
