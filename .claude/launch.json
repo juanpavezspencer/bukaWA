@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "chat-simulator",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@bukuwa/worker", "dev:chat"],
+      "port": 8788
+    }
+  ]
+}

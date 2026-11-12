@@ -1,0 +1,322 @@
+import { sql } from "drizzle-orm";
+import {
+  bigint,
+  boolean,
+  check,
+  customType,
+  date,
+  foreignKey,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  real,
+  text,
+  timestamp,
+  unique,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
+
+// Encrypted-at-rest values (NPWP, phone numbers) are stored as opaque bytes.
+// Encryption happens in application code before insert (spec 8.2).
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
+
+// Money: integer rupiah, never floats. mode "bigint" keeps full precision in JS.
+const rupiah = (name: string) => bigint(name, { mode: "bigint" });
+
+const createdAt = () =>
+  timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
+
+export const accountType = pgEnum("account_type", [
+  "asset",
+  "liability",
+  "equity",
+  "income",
+  "expense",
+]);
+export const userRole = pgEnum("user_role", ["owner", "staff", "accountant"]);
+export const contactKind = pgEnum("contact_kind", ["customer", "supplier", "other"]);
+export const entrySource = pgEnum("entry_source", [
+  "text",
+  "photo",
+  "voice",
+  "manual",
+  "system",
+]);
+export const journalStatus = pgEnum("journal_status", ["posted"]);
+export const captureStatus = pgEnum("capture_status", [
+  "received",
+  "extracted",
+  "awaiting_confirmation",
+  "confirmed",
+  "cancelled",
+  "failed",
+]);
+export const messageDirection = pgEnum("message_direction", ["inbound", "outbound"]);
+
+export const businesses = pgTable("businesses", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  type: text("type").notNull(),
+  // HMAC of the E.164 number for lookup; the number itself is encrypted.
+  ownerPhoneHash: text("owner_phone_hash").notNull().unique(),
+  ownerPhoneEnc: bytea("owner_phone_enc").notNull(),
+  npwpEnc: bytea("npwp_enc"),
+  // FK to tax_profiles is added in milestone 6 when that table exists.
+  taxProfileId: uuid("tax_profile_id"),
+  timezone: text("timezone").notNull().default("Asia/Jakarta"),
+  plan: text("plan").notNull().default("trial"),
+  trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+  createdAt: createdAt(),
+});
+
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    phoneHash: text("phone_hash").notNull().unique(),
+    phoneEnc: bytea("phone_enc").notNull(),
+    role: userRole("role").notNull().default("owner"),
+    consentAt: timestamp("consent_at", { withTimezone: true }),
+    consentVersion: text("consent_version"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("users_business_idx").on(t.businessId)],
+);
+
+export const accounts = pgTable(
+  "accounts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
+    type: accountType("type").notNull(),
+    isSystem: boolean("is_system").notNull().default(false),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("accounts_business_code_uq").on(t.businessId, t.code),
+    // Target for composite FKs so lines can't reference another tenant's account.
+    unique("accounts_id_business_uq").on(t.id, t.businessId),
+  ],
+);
+
+export const contacts = pgTable(
+  "contacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    name: text("name").notNull(),
+    phoneHash: text("phone_hash"),
+    phoneEnc: bytea("phone_enc"),
+    kind: contactKind("kind").notNull().default("other"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("contacts_business_idx").on(t.businessId),
+    unique("contacts_id_business_uq").on(t.id, t.businessId),
+  ],
+);
+
+export const journals = pgTable(
+  "journals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    date: date("date", { mode: "string" }).notNull(),
+    description: text("description").notNull(),
+    source: entrySource("source").notNull(),
+    status: journalStatus("status").notNull().default("posted"),
+    reversesJournalId: uuid("reverses_journal_id"),
+    // Caller-supplied key (e.g. capture id) so a double-tapped "OK" posts once.
+    idempotencyKey: text("idempotency_key"),
+    createdBy: uuid("created_by"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("journals_business_date_idx").on(t.businessId, t.date),
+    unique("journals_id_business_uq").on(t.id, t.businessId),
+    foreignKey({
+      name: "journals_reverses_fk",
+      columns: [t.reversesJournalId, t.businessId],
+      foreignColumns: [t.id, t.businessId],
+    }),
+    // A journal can be reversed at most once.
+    uniqueIndex("journals_reverses_uq")
+      .on(t.reversesJournalId)
+      .where(sql`${t.reversesJournalId} is not null`),
+    uniqueIndex("journals_idempotency_uq")
+      .on(t.businessId, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} is not null`),
+    check("journals_not_self_reversal", sql`${t.reversesJournalId} is distinct from ${t.id}`),
+  ],
+);
+
+export const journalLines = pgTable(
+  "journal_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id").notNull(),
+    journalId: uuid("journal_id").notNull(),
+    lineNo: integer("line_no").notNull(),
+    accountId: uuid("account_id").notNull(),
+    debit: rupiah("debit").notNull().default(sql`0`),
+    credit: rupiah("credit").notNull().default(sql`0`),
+    contactId: uuid("contact_id"),
+    memo: text("memo"),
+  },
+  (t) => [
+    index("journal_lines_journal_idx").on(t.journalId),
+    index("journal_lines_business_account_idx").on(t.businessId, t.accountId),
+    unique("journal_lines_journal_line_uq").on(t.journalId, t.lineNo),
+    foreignKey({
+      name: "journal_lines_journal_fk",
+      columns: [t.journalId, t.businessId],
+      foreignColumns: [journals.id, journals.businessId],
+    }),
+    foreignKey({
+      name: "journal_lines_account_fk",
+      columns: [t.accountId, t.businessId],
+      foreignColumns: [accounts.id, accounts.businessId],
+    }),
+    foreignKey({
+      name: "journal_lines_contact_fk",
+      columns: [t.contactId, t.businessId],
+      foreignColumns: [contacts.id, contacts.businessId],
+    }),
+    check("journal_lines_non_negative", sql`${t.debit} >= 0 and ${t.credit} >= 0`),
+    // Exactly one side is positive on every line.
+    check("journal_lines_one_side", sql`(${t.debit} > 0) <> (${t.credit} > 0)`),
+  ],
+);
+
+export const captures = pgTable(
+  "captures",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    waMessageId: text("wa_message_id"),
+    source: entrySource("source").notNull(),
+    mediaUrl: text("media_url"),
+    rawText: text("raw_text"),
+    transcript: text("transcript"),
+    extractionJson: jsonb("extraction_json"),
+    // Model confidence score (0..1), not money.
+    confidence: real("confidence"),
+    status: captureStatus("status").notNull().default("received"),
+    modelVersion: text("model_version"),
+    journalId: uuid("journal_id"),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("captures_business_status_idx").on(t.businessId, t.status),
+    uniqueIndex("captures_wa_message_uq")
+      .on(t.waMessageId)
+      .where(sql`${t.waMessageId} is not null`),
+    foreignKey({
+      name: "captures_journal_fk",
+      columns: [t.journalId, t.businessId],
+      foreignColumns: [journals.id, journals.businessId],
+    }),
+  ],
+);
+
+export const messages = pgTable(
+  "messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    direction: messageDirection("direction").notNull(),
+    waMessageId: text("wa_message_id"),
+    type: text("type").notNull(),
+    body: text("body"),
+    templateName: text("template_name"),
+    costIdr: rupiah("cost_idr"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("messages_business_created_idx").on(t.businessId, t.createdAt),
+    uniqueIndex("messages_wa_message_uq")
+      .on(t.waMessageId)
+      .where(sql`${t.waMessageId} is not null`),
+  ],
+);
+
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    actor: text("actor").notNull(),
+    action: text("action").notNull(),
+    entity: text("entity").notNull(),
+    entityId: uuid("entity_id"),
+    before: jsonb("before"),
+    after: jsonb("after"),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("audit_log_business_at_idx").on(t.businessId, t.at)],
+);
+
+/**
+ * Raw inbound WhatsApp messages, written by the webhook before the sender is
+ * resolved to a business. Not tenant-scoped (sender may not be onboarded yet),
+ * so it has no RLS; only the webhook/worker roles can touch it.
+ * Primary key on wa_message_id is the webhook idempotency guard.
+ */
+export const waInbound = pgTable("wa_inbound", {
+  waMessageId: text("wa_message_id").primaryKey(),
+  fromPhone: text("from_phone").notNull(),
+  type: text("type").notNull(),
+  payload: jsonb("payload").notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  enqueuedAt: timestamp("enqueued_at", { withTimezone: true }),
+  // Set by the worker in the same transaction as the state change it caused.
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+});
+
+/**
+ * In-progress WhatsApp onboarding (F1), keyed by phone hash. Exists before the
+ * business does, so it is not tenant-scoped; deleted when the business is created.
+ */
+export const onboardingSessions = pgTable("onboarding_sessions", {
+  phoneHash: text("phone_hash").primaryKey(),
+  step: text("step").notNull(),
+  data: jsonb("data").notNull().default({}),
+  createdAt: createdAt(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Every table that carries business_id and is protected by RLS. */
+export const TENANT_TABLES = [
+  "businesses",
+  "users",
+  "accounts",
+  "contacts",
+  "journals",
+  "journal_lines",
+  "captures",
+  "messages",
+  "audit_log",
+] as const;

@@ -1,0 +1,29 @@
+{
+  "name": "@bukuwa/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p .",
+    "dev:chat": "tsx dev/chat.ts"
+  },
+  "dependencies": {
+    "@bukuwa/db": "workspace:*",
+    "@bukuwa/idn": "workspace:*",
+    "@bukuwa/ledger": "workspace:*",
+    "@bukuwa/wa": "workspace:*",
+    "drizzle-orm": "^0.44.0",
+    "pg": "^8.13.0",
+    "pg-boss": "^10.1.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.0",
+    "@hono/node-server": "^1.19.19",
+    "@types/pg": "^8.11.0",
+    "hono": "^4.13.18"
+  }
+}

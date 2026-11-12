@@ -1,0 +1,26 @@
+{
+  "name": "@bukuwa/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@bukuwa/db": "workspace:*",
+    "@bukuwa/wa": "workspace:*",
+    "@hono/node-server": "^1.13.0",
+    "drizzle-orm": "^0.44.0",
+    "hono": "^4.6.0",
+    "pg": "^8.23.1",
+    "pg-boss": "^10.1.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.0",
+    "@types/pg": "^8.23.1"
+  }
+}
