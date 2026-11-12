@@ -6,3 +6,5 @@ export * from "./normalize.js";
 export * from "./categorize.js";
 export * from "./vision.js";
 export * from "./stt.js";
+export * from "./guard.js";
+export * from "./agent.js";

@@ -43,3 +43,20 @@ export interface ImageCase {
   oracle?: { visible_text: string; entries: Array<Omit<RawExtraction["entries"][number], "confidence">> };
   tags: string[];
 }
+
+/** One question or correction about the fixture books (books-fixture.ts). */
+export interface QuestionCase {
+  id: string;
+  text: string;
+  today: string;
+  expected: {
+    intent: "question" | "correction";
+    /** answer: must quote every must_include amount; unsupported: must quote no amounts; correction: must propose this. */
+    kind: "answer" | "unsupported" | "correction";
+    must_include?: string[];
+    correction?: { entry_key: string; action: "change" | "cancel"; amount_idr?: string; payment_code?: string };
+  };
+  /** The tool call(s) an ideal agent makes; an offline test checks they return the expected amounts. */
+  oracle?: Array<{ tool: string; input: unknown }>;
+  tags: string[];
+}

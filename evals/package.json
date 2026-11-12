@@ -10,12 +10,16 @@
     "evals": "tsx run.ts",
     "stt-bench": "tsx stt-bench.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "generate:questions": "tsx src/generate-questions.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.8.0",
     "@bukuwa/ai": "workspace:*",
-    "@bukuwa/idn": "workspace:*"
+    "@bukuwa/idn": "workspace:*",
+    "@bukuwa/worker": "workspace:*",
+    "@bukuwa/db": "workspace:*",
+    "@bukuwa/ledger": "workspace:*"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2"

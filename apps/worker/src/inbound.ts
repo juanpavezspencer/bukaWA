@@ -21,6 +21,7 @@ import {
   normalizeExtraction,
   routeMessage,
   type AiConfig,
+  type ChatModel,
   type Intent,
   type NormalizedEntry,
   type RawExtraction,
@@ -43,6 +44,10 @@ import {
   type WaSender,
 } from "@bukuwa/wa";
 import { mediaKey, type MediaStore } from "./media/store.js";
+import { askBooks } from "./agent/ask.js";
+import type { CorrectionProposal } from "./agent/tools.js";
+import { createCorrection } from "./capture/correction.js";
+import type { JournalSummary } from "@bukuwa/ledger";
 import { createBusinessFromOnboarding, localDate } from "./business.js";
 import { parseCaptureReply } from "./capture/card.js";
 import {
@@ -59,7 +64,7 @@ export interface InboundDeps {
   db: Db;
   sender: WaSender;
   keys: PiiKeys;
-  ai: { model: StructuredModel; config: AiConfig; stt?: SpeechToText };
+  ai: { model: StructuredModel; config: AiConfig; stt?: SpeechToText; chat?: ChatModel };
   /** Photo and voice capture; without it media gets a "not yet" reply. */
   media?: { fetcher: MediaFetcher; store: MediaStore };
   config: { privacyPolicyUrl: string; consentVersion: string; trialDays: number; timezone: string };
@@ -72,6 +77,7 @@ const defaultLog = (e: Record<string, unknown>) => console.log(JSON.stringify(e)
 const EXAMPLES = "Contoh:\n• jual nasi box 25 x 18rb tf BCA\n• belanja ayam 175rb cash\n• bayar listrik 350rb transfer";
 
 const REPLIES: Record<Exclude<Intent, "transaction">, string> = {
+  // Used only when no chat model is configured; otherwise the agent answers.
   question:
     "Fitur tanya laporan (misalnya \"untung minggu ini berapa?\") lagi disiapin, segera hadir ya. Sementara ini aku bisa bantu catat transaksi dulu.",
   correction:
@@ -120,6 +126,7 @@ type Plan =
   | { kind: "capture_action" }
   | { kind: "answer_amount"; captureId: string; amount: bigint }
   | { kind: "answer_payment"; captureId: string; method: string }
+  | { kind: "correction"; proposal: CorrectionProposal; summary: JournalSummary; modelVersion: string; text: string }
   | {
       kind: "new_capture";
       raw: RawExtraction;
@@ -167,11 +174,24 @@ async function identify(deps: InboundDeps, waMessageId: string): Promise<Sender 
 /** Text (typed or transcribed) -> router -> extractor -> normalizer. */
 async function planText(
   deps: InboundDeps,
+  s: Sender,
   text: string,
   today: string,
   origin: { source: "text" } | { source: "voice"; mediaUrl: string; transcript: string; sttModel: string },
 ): Promise<Plan> {
   const routed = await routeMessage(deps.ai.model, deps.ai.config, text);
+  if ((routed.intent === "question" || routed.intent === "correction") && deps.ai.chat) {
+    // F7 / Flow D: answered from the ledger through read-only tools.
+    const r = await askBooks(deps.ai.chat, deps.ai.config, {
+      db: deps.db,
+      businessId: s.user!.businessId,
+      businessName: s.businessName,
+      today,
+      text,
+    });
+    if (r.kind === "proposal") return { kind: "correction", proposal: r.proposal, summary: r.summary, modelVersion: r.modelVersion, text };
+    return { kind: "reply", replies: [{ kind: "text", body: r.text }] };
+  }
   if (routed.intent !== "transaction") {
     return { kind: "reply", replies: [{ kind: "text", body: REPLIES[routed.intent] }] };
   }
@@ -222,7 +242,7 @@ async function planMedia(deps: InboundDeps, s: Sender, media: InboundMedia, waMe
       throw err;
     }
     if (!transcript.text) return { kind: "reply", replies: [NOT_HEARD] };
-    return planText(deps, transcript.text, today, { source: "voice", mediaUrl, transcript: transcript.text, sttModel: transcript.model });
+    return planText(deps, s, transcript.text, today, { source: "voice", mediaUrl, transcript: transcript.text, sttModel: transcript.model });
   }
 
   if (media.kind === "image" && !(IMAGE_MIME_TYPES as readonly string[]).includes(mimeType)) {
@@ -285,7 +305,7 @@ async function plan(deps: InboundDeps, s: Sender, waMessageId: string, today: st
   }
 
   try {
-    return await planText(deps, text, today, { source: "text" });
+    return await planText(deps, s, text, today, { source: "text" });
   } catch (err) {
     // Refusals and malformed output won't improve on retry; API/network errors will (job retries).
     if (err instanceof ModelRefusalError || err instanceof ModelOutputError) {
@@ -370,6 +390,16 @@ export async function processInbound(deps: InboundDeps, waMessageId: string): Pr
           break;
         case "answer_payment":
           replies = await answerPayment(tx, p.captureId, p.method);
+          break;
+        case "correction":
+          replies = await createCorrection(tx, {
+            businessId: ctx.businessId,
+            waMessageId,
+            text: p.text,
+            proposal: p.proposal,
+            summary: p.summary,
+            modelVersion: p.modelVersion,
+          });
           break;
         case "new_capture":
           replies = await createCapture(tx, {

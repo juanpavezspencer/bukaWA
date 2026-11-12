@@ -41,6 +41,8 @@ export interface PostableEntry {
 const CASH = "1100";
 const BANK = "1110";
 const EWALLET = "1120";
+/** The money accounts a payment method can move. */
+export const CASH_ACCOUNT_CODES = [CASH, BANK, EWALLET] as const;
 const INVENTORY = "1300";
 const OWNER_EQUITY = "3100";
 const OWNER_DRAWINGS = "3200";

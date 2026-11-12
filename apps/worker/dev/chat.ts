@@ -12,7 +12,7 @@ import { businesses, hashPii, onboardingSessions, piiKeysFromBase64, toE164, use
 import { createTestDb } from "@bukuwa/db/testing";
 import { trialBalance } from "@bukuwa/ledger";
 import type { MediaFetcher, OutboundMessage, WaSender } from "@bukuwa/wa";
-import { aiConfigFromEnv, anthropicModel } from "@bukuwa/ai";
+import { aiConfigFromEnv, anthropicChatModel, anthropicModel } from "@bukuwa/ai";
 import { processInbound, type InboundDeps } from "../src/inbound.js";
 import { memoryMediaStore } from "../src/media/store.js";
 import { offlineModel } from "./offline-model.js";
@@ -52,7 +52,8 @@ async function reset() {
     db,
     sender,
     keys,
-    ai: { model: useClaude ? anthropicModel() : offlineModel, config: aiConfigFromEnv() },
+    // Questions and corrections need the real model; offline they get the old "coming soon" reply.
+    ai: { model: useClaude ? anthropicModel() : offlineModel, chat: useClaude ? anthropicChatModel() : undefined, config: aiConfigFromEnv() },
     // Photos need the real vision model; offline, media gets the "not yet" reply.
     media: useClaude ? { fetcher, store: memoryMediaStore() } : undefined,
     config: { privacyPolicyUrl: "https://bukuwa.id/privasi", consentVersion: "dev", trialDays: 14, timezone: "Asia/Jakarta" },

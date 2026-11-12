@@ -4,6 +4,7 @@
  *   text   router -> extractor -> normalizer on typed messages (F2)
  *   voice  the same path on voice-note transcripts (F4, after speech-to-text)
  *   image  vision extractor -> normalizer on photos and PDFs (F3)
+ *   questions  router -> agent tool loop on fixture books: answers and corrections (F7, Flow D)
  *
  *   pnpm evals                          all sets; fail on a >2 point drop vs baseline
  *   pnpm evals -- --set text,voice      only some sets
@@ -12,7 +13,8 @@
  *
  * Calls the Anthropic API: needs credentials (ANTHROPIC_API_KEY or an
  * `ant auth login` profile) and costs money. A full run is about 800 Haiku
- * calls (text + voice) and 60 Sonnet vision calls.
+ * calls (text + voice), 60 Sonnet vision calls and about 100 agent conversations
+ * (2-4 Sonnet calls each).
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -20,6 +22,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Resvg } from "@resvg/resvg-js";
 import {
   aiConfigFromEnv,
+  anthropicChatModel,
   anthropicModel,
   extractFromDocument,
   extractTransaction,
@@ -29,11 +32,26 @@ import {
   routeMessage,
   type NormalizedEntry,
 } from "@bukuwa/ai";
-import { imagePath, loadImageCases, loadTextCases, loadVoiceCases } from "./src/dataset.js";
-import { FIELDS, IMAGE_FIELDS, regressions, scoreCase, scoreImageCase, summarize, type CaseResult, type Summary } from "./src/score.js";
-import type { ImageCase, TextCase } from "./src/types.js";
+import { askBooks } from "@bukuwa/worker/agent";
+import { seedFixtureBooks, type FixtureBooks } from "./src/books-db.js";
+import { FIXTURE_BUSINESS } from "./src/books-fixture.js";
+import { imagePath, loadImageCases, loadQuestionCases, loadTextCases, loadVoiceCases } from "./src/dataset.js";
+import {
+  FIELDS,
+  IMAGE_FIELDS,
+  QUESTION_FIELDS,
+  regressions,
+  scoreCase,
+  scoreImageCase,
+  scoreQuestionCase,
+  summarize,
+  type CaseResult,
+  type QuestionOutcome,
+  type Summary,
+} from "./src/score.js";
+import type { ImageCase, QuestionCase, TextCase } from "./src/types.js";
 
-const SETS = ["text", "voice", "image"] as const;
+const SETS = ["text", "voice", "image", "questions"] as const;
 type SetName = (typeof SETS)[number];
 
 const args = process.argv.slice(2);
@@ -52,6 +70,7 @@ const BASELINE = here("./baseline.json");
 
 const cfg = aiConfigFromEnv();
 const model = anthropicModel();
+const chat = anthropicChatModel();
 
 function isModelError(err: unknown): err is Error {
   return err instanceof ModelRefusalError || err instanceof ModelOutputError;
@@ -104,6 +123,26 @@ async function runImage(c: ImageCase): Promise<CaseResult> {
   }
 }
 
+async function runQuestion(books: FixtureBooks, c: QuestionCase): Promise<CaseResult> {
+  let out: QuestionOutcome;
+  try {
+    const { intent } = await routeMessage(model, cfg, c.text);
+    if (intent !== "question" && intent !== "correction") {
+      out = { kind: "not_routed", intent };
+    } else {
+      const r = await askBooks(chat, cfg, { db: books.db, businessId: books.businessId, businessName: FIXTURE_BUSINESS, today: c.today, text: c.text });
+      out =
+        r.kind === "answer"
+          ? { kind: "answer", text: r.text }
+          : { kind: "proposal", journalId: r.proposal.journalId, action: r.proposal.action, amountIdr: r.proposal.amountIdr, paymentCode: r.proposal.paymentCode };
+    }
+  } catch (err) {
+    if (!isModelError(err)) throw err;
+    out = { kind: "not_routed", intent: `error:${err.name}` };
+  }
+  return scoreQuestionCase(c, out, books.journalIds);
+}
+
 async function pool<T>(items: T[], fn: (x: T) => Promise<CaseResult>, label: string): Promise<CaseResult[]> {
   const results: CaseResult[] = new Array(items.length);
   let next = 0;
@@ -126,6 +165,10 @@ async function runSet(name: SetName): Promise<{ summary: Summary; failures: Case
   if (name === "image") {
     results = await pool(loadImageCases().slice(0, limit), runImage, name);
     fields = IMAGE_FIELDS;
+  } else if (name === "questions") {
+    const books = await seedFixtureBooks();
+    results = await pool(loadQuestionCases().slice(0, limit), (c) => runQuestion(books, c), name);
+    fields = QUESTION_FIELDS;
   } else {
     const cases = (name === "text" ? loadTextCases() : loadVoiceCases()).slice(0, limit);
     results = await pool(cases, runText, name);
@@ -139,7 +182,8 @@ async function runSet(name: SetName): Promise<{ summary: Summary; failures: Case
 async function main() {
   console.log(
     `evals: ${only.join(", ")}${limit ? ` (first ${limit})` : ""}; router=${cfg.routerModel}/${cfg.routerEffort}, ` +
-      `extractor=${cfg.extractorModel}/${cfg.extractorEffort}, vision=${cfg.visionModel}/${cfg.visionEffort}`,
+      `extractor=${cfg.extractorModel}/${cfg.extractorEffort}, vision=${cfg.visionModel}/${cfg.visionEffort}, ` +
+      `agent=${cfg.agentModel}/${cfg.agentEffort}`,
   );
   const summaries: Partial<Record<SetName, Summary>> = {};
   const failures: Partial<Record<SetName, CaseResult[]>> = {};
@@ -147,7 +191,7 @@ async function main() {
     const r = await runSet(name);
     summaries[name] = r.summary;
     failures[name] = r.failures;
-    const label = name === "image" ? "document detection" : "intent accuracy";
+    const label = name === "image" ? "document detection" : name === "questions" ? "routed to the agent" : "intent accuracy";
     console.log(`\n[${name}] ${r.summary.cases} cases, ${label}: ${r.summary.intentAccuracy}%`);
     for (const [f, v] of Object.entries(r.summary.fieldAccuracy)) console.log(`  ${f.padEnd(15)} ${v}%`);
   }

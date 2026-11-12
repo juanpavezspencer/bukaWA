@@ -5,6 +5,7 @@ import { formatRupiah } from "@bukuwa/idn";
 import { buildJournalDraft, daySummary, postJournal } from "@bukuwa/ledger";
 import type { OutboundMessage } from "@bukuwa/wa";
 import { askAmount, askPayment, captureCard, type CardEntry } from "./card.js";
+import { confirmCorrection, type StoredCorrection } from "./correction.js";
 
 /*
  * Capture lifecycle (F2, F5, F6):
@@ -270,6 +271,9 @@ export async function cancelCapture(tx: Tx, captureId: string, mode: "edit" | "c
   const row = await lockCapture(tx, captureId);
   if (!row || (row.status !== "awaiting_confirmation" && row.status !== "extracted")) return [ALREADY_DONE];
   await tx.update(captures).set({ status: "cancelled", updatedAt: sql`now()` }).where(eq(captures.id, row.id));
+  if ((row.extractionJson as { type?: string }).type === "correction") {
+    return [{ kind: "text", body: "Oke, nggak jadi. Catatannya tetap seperti semula." }];
+  }
   return [
     {
       kind: "text",
@@ -289,6 +293,9 @@ export async function confirmCapture(
 ): Promise<OutboundMessage[]> {
   const row = await lockCapture(tx, captureId);
   if (!row || row.status !== "awaiting_confirmation") return [ALREADY_DONE];
+  if ((row.extractionJson as { type?: string }).type === "correction") {
+    return confirmCorrection(tx, ctx, row.id, row.extractionJson as StoredCorrection);
+  }
   const stored = row.extractionJson as StoredCapture;
 
   let firstJournalId: string | undefined;

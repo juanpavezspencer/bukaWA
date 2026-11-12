@@ -13,7 +13,8 @@ export type LedgerErrorCode =
   | "UNSUPPORTED_KIND"
   | "MISSING_PAYMENT_METHOD"
   | "INVALID_CATEGORY"
-  | "SPLIT_MISMATCH";
+  | "SPLIT_MISMATCH"
+  | "NOT_CORRECTABLE";
 
 export class LedgerError extends Error {
   constructor(
