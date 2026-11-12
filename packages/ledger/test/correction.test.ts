@@ -24,6 +24,28 @@ function code(fn: () => unknown) {
 }
 
 describe("correctedDraft", () => {
+  it("keeps the contact and allows an amount change on a receivable", () => {
+    const sari = "00000000-0000-4000-8000-0000000000aa";
+    const receivable: CorrectableJournal = {
+      id: "j2",
+      date: "2026-11-12",
+      description: "Nasi box Bu Sari",
+      kind: "receivable",
+      reversed: false,
+      lines: [
+        { code: "1200", debit: 350_000n, credit: 0n, memo: "Bu Sari", contactId: sari },
+        { code: "4100", debit: 0n, credit: 350_000n, memo: "Bu Sari", contactId: sari },
+      ],
+    };
+    const d = correctedDraft(BIZ, receivable, { amountIdr: 300_000n });
+    expect(d.lines).toEqual([
+      { accountCode: "1200", debit: 300_000n, memo: "Bu Sari", contactId: sari },
+      { accountCode: "4100", credit: 300_000n, memo: "Bu Sari", contactId: sari },
+    ]);
+    expect(code(() => correctedDraft(BIZ, receivable, { paymentCode: "1100" }))).toBe("NOT_CORRECTABLE");
+  });
+
+
   it("changes the amount on both sides and keeps accounts, memo and description", () => {
     const d = correctedDraft(BIZ, expense, { amountIdr: 45_000n });
     expect(d.lines).toEqual([

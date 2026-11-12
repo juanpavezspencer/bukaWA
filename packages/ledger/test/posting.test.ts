@@ -89,10 +89,62 @@ describe("buildJournalDraft", () => {
     expect(code(() => buildJournalDraft(BIZ, { ...base, kind: "sale", amountIdr: 1n, paymentMethod: null }))).toBe("MISSING_PAYMENT_METHOD");
   });
 
-  it("refuses kinds that later milestones handle", () => {
-    for (const kind of ["receivable", "payable", "settlement", "transfer_in", "transfer_out"] as const) {
+  it("refuses transfers between own accounts (not supported yet)", () => {
+    for (const kind of ["transfer_in", "transfer_out"] as const) {
       expect(code(() => buildJournalDraft(BIZ, { ...base, kind, amountIdr: 1n, paymentMethod: "cash" }))).toBe("UNSUPPORTED_KIND");
     }
+  });
+
+  const SARI = "00000000-0000-4000-8000-0000000000aa";
+
+  it("receivable (sale on credit): debit Piutang usaha for the contact, credit income; no payment method needed", () => {
+    const d = buildJournalDraft(BIZ, { ...base, kind: "receivable", amountIdr: 350_000n, paymentMethod: null, contactId: SARI, counterparty: "Bu Sari" });
+    expect(d.lines).toEqual([
+      { accountCode: "1200", debit: 350_000n, memo: "Bu Sari", contactId: SARI },
+      { accountCode: "4100", credit: 350_000n, memo: "Bu Sari", contactId: SARI },
+    ]);
+  });
+
+  it("payable (bought on credit): debit the expense category, credit Utang usaha", () => {
+    const d = buildJournalDraft(BIZ, { ...base, kind: "payable", amountIdr: 500_000n, paymentMethod: null, accountCode: "5100", contactId: SARI });
+    expect(d.lines.map((l) => [l.accountCode, l.debit ?? 0n, l.credit ?? 0n])).toEqual([
+      ["5100", 500_000n, 0n],
+      ["2100", 0n, 500_000n],
+    ]);
+    expect(code(() => buildJournalDraft(BIZ, { ...base, kind: "payable", amountIdr: 1n, paymentMethod: null, accountCode: "4100", contactId: SARI }))).toBe(
+      "INVALID_CATEGORY",
+    );
+  });
+
+  it("settlement of a receivable: money in, Piutang usaha down", () => {
+    const d = buildJournalDraft(BIZ, { ...base, kind: "settlement", settles: "receivable", amountIdr: 350_000n, paymentMethod: "cash", contactId: SARI });
+    expect(d.lines.map((l) => [l.accountCode, l.debit ?? 0n, l.credit ?? 0n])).toEqual([
+      ["1100", 350_000n, 0n],
+      ["1200", 0n, 350_000n],
+    ]);
+  });
+
+  it("settlement of a payable: Utang usaha down, money out", () => {
+    const d = buildJournalDraft(BIZ, { ...base, kind: "settlement", settles: "payable", amountIdr: 500_000n, paymentMethod: "bank:BCA", contactId: SARI });
+    expect(d.lines.map((l) => [l.accountCode, l.debit ?? 0n, l.credit ?? 0n])).toEqual([
+      ["2100", 500_000n, 0n],
+      ["1110", 0n, 500_000n],
+    ]);
+  });
+
+  it("debts need a contact, settlements a side and a payment method", () => {
+    expect(code(() => buildJournalDraft(BIZ, { ...base, kind: "receivable", amountIdr: 1n, paymentMethod: null }))).toBe("MISSING_CONTACT");
+    expect(code(() => buildJournalDraft(BIZ, { ...base, kind: "settlement", amountIdr: 1n, paymentMethod: "cash", contactId: SARI }))).toBe(
+      "MISSING_SETTLEMENT_SIDE",
+    );
+    expect(
+      code(() => buildJournalDraft(BIZ, { ...base, kind: "settlement", settles: "receivable", amountIdr: 1n, paymentMethod: null, contactId: SARI })),
+    ).toBe("MISSING_PAYMENT_METHOD");
+  });
+
+  it("puts the contact on every line of a sale when known", () => {
+    const d = buildJournalDraft(BIZ, { ...base, kind: "sale", amountIdr: 1_000n, paymentMethod: "cash", contactId: SARI });
+    expect(d.lines.every((l) => l.contactId === SARI)).toBe(true);
   });
 
   it("refuses zero or negative amounts", () => {

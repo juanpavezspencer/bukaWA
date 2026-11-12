@@ -26,9 +26,12 @@ function inPeriod(e: FixtureEntry, p: PeriodPreset) {
   return e.date >= r.from && e.date <= r.to;
 }
 const sum = (xs: FixtureEntry[]) => xs.reduce((s, e) => s + e.amountIdr, 0);
-const income = (p: PeriodPreset) => sum(active.filter((e) => e.kind === "sale" && inPeriod(e, p)));
-const expense = (p: PeriodPreset) => sum(active.filter((e) => e.kind === "expense" && inPeriod(e, p)));
-const byCategory = (p: PeriodPreset, code: string) => sum(active.filter((e) => e.accountCode === code && e.kind === "expense" && inPeriod(e, p)));
+// Accrual: credit sales and purchases count when made, not when paid.
+const isIncome = (e: FixtureEntry) => e.kind === "sale" || e.kind === "receivable";
+const isExpense = (e: FixtureEntry) => e.kind === "expense" || e.kind === "payable";
+const income = (p: PeriodPreset) => sum(active.filter((e) => isIncome(e) && inPeriod(e, p)));
+const expense = (p: PeriodPreset) => sum(active.filter((e) => isExpense(e) && inPeriod(e, p)));
+const byCategory = (p: PeriodPreset, code: string) => sum(active.filter((e) => e.accountCode === code && isExpense(e) && inPeriod(e, p)));
 
 const P = (preset: PeriodPreset) => ({ preset, from: null, to: null });
 
@@ -101,8 +104,10 @@ for (const [a, b, text, metric] of COMPARE) {
 // --- cash position ------------------------------------------------------------------
 const money = { Kas: 0, Bank: 0, "E-wallet": 0 } as Record<string, number>;
 for (const e of active) {
+  if (!e.paymentMethod) continue; // on credit: no money moved
   const acct = e.paymentMethod === "cash" ? "Kas" : e.paymentMethod.startsWith("ewallet:") ? "E-wallet" : "Bank";
-  money[acct]! += e.kind === "sale" || e.kind === "owner_capital" ? e.amountIdr : -e.amountIdr;
+  const moneyIn = e.kind === "sale" || e.kind === "owner_capital" || (e.kind === "settlement" && e.settles === "receivable");
+  money[acct]! += moneyIn ? e.amountIdr : -e.amountIdr;
 }
 const total = money.Kas! + money.Bank! + money["E-wallet"]!;
 for (const [text, value] of [
@@ -219,14 +224,50 @@ listCase("prive bulan lalu total berapa?", "last_month", drawings("last_month"),
 listCase("bulan ini beli ayam habis berapa?", "this_month", item("this_month", "ayam"), { text: "ayam" }, "item");
 listCase("jualan tumpeng bulan lalu dapet berapa?", "last_month", item("last_month", "tumpeng"), { text: "tumpeng" }, "item");
 
+// --- receivables and payables (F8) ----------------------------------------------------------
+// Open balance per contact: debts up, settlements down. Independent of the ledger's FIFO matching.
+const owedBy = new Map<string, { kind: "receivable" | "payable"; amount: number }>();
+for (const e of active) {
+  const kind = e.kind === "receivable" || e.kind === "payable" ? e.kind : e.kind === "settlement" ? e.settles! : null;
+  if (!kind) continue;
+  const cur = owedBy.get(e.counterparty!) ?? { kind, amount: 0 };
+  cur.amount += e.kind === "settlement" ? -e.amountIdr : e.amountIdr;
+  owedBy.set(e.counterparty!, cur);
+}
+const owing = (kind: "receivable" | "payable") => [...owedBy].filter(([, v]) => v.kind === kind && v.amount > 0);
+const owed = (who: string) => owedBy.get(who)!.amount;
+const totalOwed = (kind: "receivable" | "payable") => owing(kind).reduce((s, [, v]) => s + v.amount, 0);
+const openCase = (text: string, kind: "receivable" | "payable" | null, contact: string | null, amounts: number[], tag: string) =>
+  add({
+    text,
+    expected: { intent: "question", kind: "answer", must_include: amounts.map(rp) },
+    oracle: [{ tool: "get_open_items", input: { kind, contact } }],
+    tags: ["open_items", tag],
+  });
+openCase("siapa aja yang belum bayar?", "receivable", null, [totalOwed("receivable"), ...owing("receivable").map(([, v]) => v.amount)], "who_owes");
+openCase("total piutang semua berapa", "receivable", null, [totalOwed("receivable")], "total");
+openCase("piutang bu rahma masih berapa?", null, "bu rahma", [owed("Bu Rahma")], "contact");
+openCase("pak hendra masih utang berapa ya?", null, "pak hendra", [owed("Pak Hendra")], "contact");
+openCase("utang ke supplier totalnya berapa?", "payable", null, [totalOwed("payable")], "total");
+openCase("utangku ke toko sumber rejeki sisa berapa?", null, "toko sumber rejeki", [owed("Toko Sumber Rejeki")], "contact");
+for (const [text, who] of [
+  ["tagih bu rahma dong", "Bu Rahma"],
+  ["buatin pesan tagihan buat pak hendra", "Pak Hendra"],
+] as const) {
+  add({
+    text,
+    expected: { intent: "question", kind: "reminder", reminder_contact: who, must_include: [rp(owed(who))] },
+    oracle: [{ tool: "draft_reminder", input: { contact: who.toLowerCase() } }],
+    tags: ["reminder"],
+  });
+}
+
 // --- not available yet ---------------------------------------------------------------------
 for (const text of [
-  "siapa aja yang belum bayar?",
-  "piutang bu sari masih berapa?",
-  "utang ke supplier totalnya berapa?",
   "pajak bulan ini harus bayar berapa?",
   "kirimin laporan pdf bulan lalu dong",
   "stok ayam tinggal berapa kilo?",
+  "bikinin invoice buat bu sari bisa?",
 ]) {
   add({ text, expected: { intent: "question", kind: "unsupported" }, tags: ["unsupported"] });
 }

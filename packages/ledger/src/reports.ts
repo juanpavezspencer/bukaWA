@@ -1,20 +1,14 @@
 import { and, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { accounts, journalLines, journals, rows, type Tx } from "@bukuwa/db";
 import { LedgerError } from "./errors.js";
-import { CASH_ACCOUNT_CODES, type EntryKind } from "./posting.js";
+import { assertScope } from "./scope.js";
+import { CASH_ACCOUNT_CODES, PAYABLE_ACCOUNT, RECEIVABLE_ACCOUNT, type EntryKind } from "./posting.js";
 
 /*
  * Read-only reports for "ask your books" (F7). Every number an answer quotes
  * comes from these functions. Reversals carry the original's date, so they net
  * out of every period automatically.
  */
-
-async function assertScope(tx: Tx, businessId: string): Promise<void> {
-  const r = await tx.execute(sql`select app_current_business_id()::text as id`);
-  if (rows<{ id: string | null }>(r)[0]?.id !== businessId) {
-    throw new LedgerError("BUSINESS_MISMATCH", "report business does not match the transaction's business scope");
-  }
-}
 
 export interface DateRange {
   /** Inclusive YYYY-MM-DD. */
@@ -111,6 +105,7 @@ interface LineInfo {
   debit: bigint;
   credit: bigint;
   memo: string | null;
+  contactId: string | null;
 }
 
 export interface JournalSummary {
@@ -134,7 +129,7 @@ export interface JournalSummary {
   /** Two lines: one category, one payment account. Only these can be corrected by amount. */
   simple: boolean;
   createdAt: Date;
-  lines: Array<{ code: string; debit: bigint; credit: bigint; memo: string | null }>;
+  lines: Array<{ code: string; debit: bigint; credit: bigint; memo: string | null; contactId: string | null }>;
 }
 
 const CASH = new Set<string>(CASH_ACCOUNT_CODES);
@@ -151,21 +146,33 @@ export function describeLines(lines: LineInfo[]): Pick<JournalSummary, "kind" | 
   const payLine = pay[0];
   const cat = other[0];
   let kind: JournalSummary["kind"] = "other";
+  let category = cat;
   if (payLine && cat && pay.length === 1) {
     const moneyIn = payLine.debit > 0n;
     if (cat.type === "income" && moneyIn) kind = "sale";
     else if ((cat.type === "expense" || cat.code === "1300") && !moneyIn) kind = "expense";
     else if (cat.code === "3100" && moneyIn) kind = "owner_capital";
     else if (cat.code === "3200" && !moneyIn) kind = "owner_drawing";
+    else if (other.length === 1 && cat.code === RECEIVABLE_ACCOUNT && moneyIn) kind = "settlement";
+    else if (other.length === 1 && cat.code === PAYABLE_ACCOUNT && !moneyIn) kind = "settlement";
+  } else if (!pay.length && lines.length === 2) {
+    // On credit: the debt account takes the place of the payment account.
+    const debt = lines.find((l) => l.code === RECEIVABLE_ACCOUNT || l.code === PAYABLE_ACCOUNT);
+    const rest = lines.find((l) => l !== debt);
+    if (debt && rest) {
+      if (debt.code === RECEIVABLE_ACCOUNT && debt.debit > 0n && rest.type === "income") kind = "receivable";
+      else if (debt.code === PAYABLE_ACCOUNT && debt.credit > 0n && (rest.type === "expense" || rest.code === "1300")) kind = "payable";
+      if (kind !== "other") category = rest;
+    }
   }
   return {
     kind,
     amountIdr,
-    category: cat?.name ?? null,
-    categoryCode: cat?.code ?? null,
+    category: category?.name ?? null,
+    categoryCode: category?.code ?? null,
     paymentAccount: payLine?.name ?? null,
     paymentCode: payLine?.code ?? null,
-    simple: lines.length === 2 && pay.length === 1,
+    simple: lines.length === 2 && (pay.length === 1 || kind === "receivable" || kind === "payable"),
   };
 }
 
@@ -212,6 +219,7 @@ async function summaries(tx: Tx, where: ReturnType<typeof and>, limit: number): 
       debit: journalLines.debit,
       credit: journalLines.credit,
       memo: journalLines.memo,
+      contactId: journalLines.contactId,
     })
     .from(journalLines)
     .innerJoin(accounts, eq(accounts.id, journalLines.accountId))
@@ -226,7 +234,7 @@ async function summaries(tx: Tx, where: ReturnType<typeof and>, limit: number): 
       reversed: Boolean(h.reversed),
       ...describeLines(ls),
       counterparty: ls.find((l) => l.memo)?.memo ?? null,
-      lines: ls.map((l) => ({ code: l.code, debit: l.debit, credit: l.credit, memo: l.memo })),
+      lines: ls.map((l) => ({ code: l.code, debit: l.debit, credit: l.credit, memo: l.memo, contactId: l.contactId })),
     };
   });
 }
@@ -293,4 +301,34 @@ export async function getJournalSummary(tx: Tx, businessId: string, journalId: s
   if (!/^[0-9a-f-]{36}$/i.test(journalId)) return undefined;
   const [j] = await summaries(tx, and(eq(journals.businessId, businessId), eq(journals.id, journalId)), 1);
   return j;
+}
+
+export interface TopSale {
+  description: string;
+  amountIdr: bigint;
+  count: number;
+}
+
+/** Best sellers by income, grouped by entry description ("Jual nasi box"); cash and credit sales alike. */
+export async function topSales(tx: Tx, businessId: string, range: DateRange, limit = 3): Promise<TopSale[]> {
+  await assertScope(tx, businessId);
+  if (range.from > range.to) throw new LedgerError("INVALID_DATE", "from is after to");
+  const r = await tx.execute(sql`
+    select min(j.description) as description, sum(l.credit - l.debit)::text as amount, count(distinct j.id)::int as n
+    from journal_lines l
+    join journals j on j.id = l.journal_id
+    join accounts a on a.id = l.account_id
+    where l.business_id = ${businessId} and a.type = 'income'
+      and j.date between ${range.from} and ${range.to}
+      and j.reverses_journal_id is null
+      and not exists (select 1 from journals r where r.reverses_journal_id = j.id)
+    group by lower(trim(j.description))
+    having sum(l.credit - l.debit) > 0
+    order by sum(l.credit - l.debit) desc, min(j.description)
+    limit ${limit}`);
+  return rows<{ description: string; amount: string; n: number }>(r).map((x) => ({
+    description: x.description,
+    amountIdr: BigInt(x.amount),
+    count: x.n,
+  }));
 }

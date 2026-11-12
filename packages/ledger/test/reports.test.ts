@@ -6,11 +6,13 @@ import {
   cashPosition,
   getJournalSummary,
   LedgerError,
+  findOrCreateContact,
   findTransactions,
   listTransactions,
   postJournal,
   profitAndLoss,
   reverseJournal,
+  topSales,
   type PostableEntry,
 } from "../src/index.js";
 
@@ -87,6 +89,48 @@ describe("cashPosition", () => {
   it("excludes later postings", async () => {
     const cp = await withBusiness(db, biz, (tx) => cashPosition(tx, biz, "2026-10-31"));
     expect(cp.totalIdr).toBe(300_000n);
+  });
+});
+
+describe("topSales", () => {
+  it("groups income by description, largest first, ignoring cancelled entries", async () => {
+    const top = await withBusiness(db, biz, (tx) => topSales(tx, biz, { from: "2026-10-01", to: "2026-11-30" }, 5));
+    expect(top).toEqual([
+      { description: "Jual nasi box", amountIdr: 750_000n, count: 2 },
+      { description: "Jual kue lapis", amountIdr: 200_000n, count: 1 },
+    ]);
+    expect(await withBusiness(db, biz, (tx) => topSales(tx, biz, { from: "2026-11-11", to: "2026-11-30" }, 1))).toEqual([
+      { description: "Jual kue lapis", amountIdr: 200_000n, count: 1 },
+    ]);
+  });
+});
+
+describe("credit entries", () => {
+  it("classifies receivables, payables and settlements and keeps them out of cash", async () => {
+    const other2 = await createTestBusiness(db, "Warung Kredit");
+    await withBusiness(db, other2, async (tx) => {
+      const sari = await findOrCreateContact(tx, other2, "Bu Sari", "customer");
+      const jaya = await findOrCreateContact(tx, other2, "Toko Jaya", "supplier");
+      const post = (e: PostableEntry) => postJournal(tx, buildJournalDraft(other2, e));
+      await post(entry({ kind: "receivable", amountIdr: 350_000n, date: "2026-11-09", description: "Nasi box", paymentMethod: null, contactId: sari, counterparty: "Bu Sari" }));
+      await post(entry({ kind: "payable", amountIdr: 500_000n, date: "2026-11-10", description: "Beras", paymentMethod: null, accountCode: "5100", contactId: jaya }));
+      await post(entry({ kind: "settlement", settles: "receivable", amountIdr: 350_000n, date: "2026-11-11", description: "Lunas", contactId: sari }));
+      await post(entry({ kind: "settlement", settles: "payable", amountIdr: 200_000n, date: "2026-11-12", description: "Cicil", paymentMethod: "bank:BCA", contactId: jaya }));
+      const list = await listTransactions(tx, other2, {});
+      expect(list.map((t) => [t.description, t.kind, t.category, t.paymentAccount])).toEqual([
+        ["Cicil", "settlement", "Utang usaha", "Bank"],
+        ["Lunas", "settlement", "Piutang usaha", "Kas"],
+        ["Beras", "payable", "HPP / Bahan baku", null],
+        ["Nasi box", "receivable", "Penjualan", null],
+      ]);
+      expect(list[3]!.lines[0]!.contactId).toBe(sari);
+      expect(list[3]!.simple).toBe(true);
+      // Accrual: credit sales count as income when made, not when paid.
+      const pl = await profitAndLoss(tx, other2, { from: "2026-11-01", to: "2026-11-30" });
+      expect([pl.incomeIdr, pl.expenseIdr]).toEqual([350_000n, 500_000n]);
+      const cash = await cashPosition(tx, other2, "2026-11-30");
+      expect(cash.totalIdr).toBe(150_000n);
+    });
   });
 });
 

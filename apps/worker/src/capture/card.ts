@@ -9,8 +9,13 @@ export interface CardEntry {
   amountIdr: bigint;
   date: string;
   counterparty: string | null;
-  paymentMethod: string;
+  /** Null for debts on credit (no money moved yet). */
+  paymentMethod: string | null;
+  /** Settlement: which debt is paid. */
+  settles?: "receivable" | "payable" | null;
   categoryName: string | null;
+  /** Extra lines, e.g. the contact's balance after this entry. */
+  notes?: string[];
   items: Array<{
     name: string;
     qtyText: string | null;
@@ -51,7 +56,8 @@ const FIELD_LABEL: Record<FieldName, string> = {
 function headline(e: CardEntry): string {
   const amt = formatRupiah(e.amountIdr);
   const who = e.counterparty ? (e.kind === "sale" ? ` dari ${e.counterparty}` : ` ke ${e.counterparty}`) : "";
-  const tail = ` (${paymentLabel(e.paymentMethod)}), ${shortDate(e.date)}`;
+  const tail = e.paymentMethod ? ` (${paymentLabel(e.paymentMethod)}), ${shortDate(e.date)}` : `, ${shortDate(e.date)}`;
+  const name = e.counterparty ?? "";
   switch (e.kind) {
     case "sale":
       return `Pemasukan ${amt}${who}${tail}`;
@@ -61,6 +67,12 @@ function headline(e: CardEntry): string {
       return `Tambah modal ${amt}${tail}`;
     case "owner_drawing":
       return `Ambil uang pribadi (prive) ${amt}${tail}`;
+    case "receivable":
+      return `Piutang ${amt}: ${name} belum bayar${tail}`;
+    case "payable":
+      return `Utang ${amt} ke ${name}, belum dibayar${tail}`;
+    case "settlement":
+      return e.settles === "payable" ? `Bayar utang ${amt} ke ${name}${tail}` : `Pelunasan piutang ${amt} dari ${name}${tail}`;
     default:
       return `${e.description} ${amt}${tail}`;
   }
@@ -86,6 +98,7 @@ function entryBlock(e: CardEntry): string {
   }
   const split = e.items.some((i) => i.categoryName);
   if (e.categoryName && !split) lines.push(`Kategori: ${e.categoryName}`);
+  lines.push(...(e.notes ?? []));
   return lines.join("\n");
 }
 
@@ -103,6 +116,50 @@ export function captureCard(captureId: string, entries: CardEntry[], notes: stri
       { id: `cap:ok:${captureId}`, title: "OK" },
       { id: `cap:edit:${captureId}`, title: "Ubah" },
       { id: `cap:cancel:${captureId}`, title: "Batal" },
+    ],
+  };
+}
+
+/**
+ * A sale (or expense) from a contact who still owes (or is owed): Flow A step 5.
+ * "Ya, pelunasan" records it as the debt's payment; "Bukan" as a new sale.
+ */
+export function settleOfferCard(
+  captureId: string,
+  e: CardEntry,
+  offer: { settles: "receivable" | "payable"; balanceIdr: string; since: string | null; name: string },
+): OutboundMessage {
+  const since = offer.since ? ` sejak ${shortDate(offer.since)}` : "";
+  const debt =
+    offer.settles === "receivable"
+      ? `${offer.name} masih punya utang ${formatRupiah(BigInt(offer.balanceIdr))}${since}. Ini pelunasan utang ${offer.name}?`
+      : `Kamu masih ada utang ${formatRupiah(BigInt(offer.balanceIdr))} ke ${offer.name}${since}. Ini bayar utang ke ${offer.name}?`;
+  return {
+    kind: "buttons",
+    body: `${entryBlock(e)}\n\n${debt}`,
+    buttons: [
+      { id: `cap:settle:${captureId}`, title: "Ya, pelunasan" },
+      { id: `cap:ok:${captureId}`, title: e.kind === "expense" ? "Bukan, belanja baru" : "Bukan, jualan baru" },
+      { id: `cap:cancel:${captureId}`, title: "Batal" },
+    ],
+  };
+}
+
+export function askCounterparty(kind: string, amount: string): OutboundMessage {
+  const q =
+    kind === "receivable" ? `Siapa yang belum bayar ${amount}?`
+    : kind === "payable" ? `Utang ${amount} ini ke siapa?`
+    : `Pembayaran ${amount} ini dari/ke siapa?`;
+  return { kind: "text", body: `${q} Tulis namanya aja ya, contoh: Bu Sari.` };
+}
+
+export function askSettles(captureId: string, name: string, amount: string): OutboundMessage {
+  return {
+    kind: "buttons",
+    body: `Pembayaran ${amount} dengan ${name}: siapa yang bayar?`,
+    buttons: [
+      { id: `cap:side:${captureId}:r`, title: `Dia bayar ke aku` },
+      { id: `cap:side:${captureId}:p`, title: `Aku bayar ke dia` },
     ],
   };
 }
@@ -128,14 +185,18 @@ export function askPayment(captureId: string, summary: string): OutboundMessage 
 }
 
 export type CaptureAction =
-  | { action: "ok" | "edit" | "cancel"; captureId: string }
-  | { action: "pay"; captureId: string; method: string };
+  | { action: "ok" | "edit" | "cancel" | "settle"; captureId: string }
+  | { action: "pay"; captureId: string; method: string }
+  | { action: "side"; captureId: string; settles: "receivable" | "payable" };
 
 export function parseCaptureReply(replyId: string | undefined): CaptureAction | null {
   if (!replyId?.startsWith("cap:")) return null;
   const [, action, captureId, choice] = replyId.split(":");
   if (!captureId || !/^[0-9a-f-]{36}$/i.test(captureId)) return null;
-  if (action === "ok" || action === "edit" || action === "cancel") return { action, captureId };
+  if (action === "ok" || action === "edit" || action === "cancel" || action === "settle") return { action, captureId };
+  if (action === "side" && (choice === "r" || choice === "p")) {
+    return { action, captureId, settles: choice === "r" ? "receivable" : "payable" };
+  }
   if (action === "pay") {
     const c = PAYMENT_CHOICES.find((p) => p.id === choice);
     return c ? { action: "pay", captureId, method: c.method } : null;

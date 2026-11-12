@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { businesses, hashPii, journals, piiKeysFromBase64, waInbound, withBusiness, type Db } from "@bukuwa/db";
 import { createTestDb } from "@bukuwa/db/testing";
-import { buildJournalDraft, daySummary, postJournal, trialBalance, type PostableEntry } from "@bukuwa/ledger";
+import { buildJournalDraft, daySummary, findOrCreateContact, postJournal, trialBalance, type PostableEntry } from "@bukuwa/ledger";
 import type { OutboundMessage, WaSender } from "@bukuwa/wa";
 import { percentChange } from "../src/agent/tools.js";
 import { ASK_FALLBACK } from "../src/agent/ask.js";
@@ -21,8 +21,11 @@ class FakeSender implements WaSender {
     this.sent.push(msg);
     return undefined;
   }
-  last() {
-    return this.sent.at(-1)!;
+  /** Bot replies to an owner's message are never templates. */
+  last(): Exclude<OutboundMessage, { kind: "template" }> {
+    const m = this.sent.at(-1)!;
+    if (m.kind === "template") throw new Error("unexpected template reply");
+    return m;
   }
   button(title: string) {
     const m = this.last();
@@ -98,7 +101,14 @@ describe("ask your books (F7)", () => {
     expect(sender.last().body).toBe("Untung minggu ini *Rp 150.000*, minggu lalu Rp 500.000 (-70%).");
     // The model saw today's date and the business, and only read-only tools ran.
     expect(JSON.stringify(chat.requests[0]!.messages[0])).toContain("Today is 2026-11-12");
-    expect(chat.requests[0]!.tools.map((t) => t.name)).toEqual(["get_profit_and_loss", "get_cash_position", "list_transactions", "propose_correction"]);
+    expect(chat.requests[0]!.tools.map((t) => t.name)).toEqual([
+      "get_profit_and_loss",
+      "get_cash_position",
+      "list_transactions",
+      "get_open_items",
+      "draft_reminder",
+      "propose_correction",
+    ]);
   });
 
   it("lists transactions with a computed count and total", async () => {
@@ -127,6 +137,66 @@ describe("ask your books (F7)", () => {
     ];
     await send({ text: "rata-rata penjualan per hari?" });
     expect(sender.last().body).toBe(ASK_FALLBACK);
+  });
+});
+
+describe("receivables and payables (F8)", () => {
+  beforeEach(async () => {
+    await withBusiness(db, bizId, async (tx) => {
+      const sari = await findOrCreateContact(tx, bizId, "Bu Sari", "customer");
+      const budi = await findOrCreateContact(tx, bizId, "Pak Budi", "customer");
+      const jaya = await findOrCreateContact(tx, bizId, "Toko Jaya", "supplier");
+      const post = (e: PostableEntry) => postJournal(tx, buildJournalDraft(bizId, e));
+      await post(entry({ kind: "receivable", amountIdr: 300_000n, date: "2026-11-03", description: "Nasi box arisan", paymentMethod: null, contactId: sari }));
+      await post(entry({ kind: "receivable", amountIdr: 200_000n, date: "2026-11-09", description: "Kue lapis", paymentMethod: null, contactId: sari }));
+      await post(entry({ kind: "settlement", settles: "receivable", amountIdr: 100_000n, date: "2026-11-10", description: "Cicilan", contactId: sari }));
+      await post(entry({ kind: "receivable", amountIdr: 150_000n, date: "2026-11-11", description: "Tumpeng", paymentMethod: null, contactId: budi }));
+      await post(entry({ kind: "payable", amountIdr: 800_000n, date: "2026-11-05", description: "Beras", paymentMethod: null, accountCode: "5100", contactId: jaya }));
+    });
+  });
+
+  it("answers who hasn't paid from open balances computed in code", async () => {
+    model.set("siapa aja yang belum bayar?", { intent: "question" });
+    chat.steps = [
+      call("get_open_items", { kind: "receivable", contact: null }),
+      say((r) => `Total piutang *${r.total}*: ${r.contacts.map((c: any) => `${c.name} ${c.balance} (sejak ${c.since})`).join(", ")}.`),
+    ];
+    await send({ text: "siapa aja yang belum bayar?" });
+    expect(sender.last().body).toBe("Total piutang *Rp 550.000*: Bu Sari Rp 400.000 (sejak 2026-11-03), Pak Budi Rp 150.000 (sejak 2026-11-11).");
+  });
+
+  it("finds one contact's open items by name, loosely", async () => {
+    model.set("utang ke toko jaya berapa", { intent: "question" });
+    chat.steps = [
+      call("get_open_items", { kind: null, contact: "toko jaya" }),
+      say((r) => `Utang ke ${r.contacts[0].name} ${r.contacts[0].balance}.`),
+    ];
+    await send({ text: "utang ke toko jaya berapa" });
+    expect(sender.last().body).toBe("Utang ke Toko Jaya Rp 800.000.");
+  });
+
+  it("drafts a reminder the owner can forward, with the amount from the ledger", async () => {
+    model.set("buatin pesan tagihan buat bu sari", { intent: "question" });
+    chat.steps = [call("draft_reminder", { contact: "bu sari" })];
+    await send({ text: "buatin pesan tagihan buat bu sari" });
+    const [intro, draft] = sender.sent.slice(-2);
+    expect(intro!.kind === "text" && intro!.body).toContain("tinggal diteruskan ke Bu Sari");
+    expect(draft!.kind === "text" && draft!.body).toBe(
+      "Halo Bu Sari, semoga sehat selalu 🙏\n" +
+        "Mau mengingatkan, masih ada tagihan dari Catering Bu Rina sebesar *Rp 400.000*:\n" +
+        "• 3 Nov, Nasi box arisan: Rp 200.000 (sisa)\n" +
+        "• 9 Nov, Kue lapis: Rp 200.000\n" +
+        "Kalau sudah transfer, kabari ya. Terima kasih banyak!",
+    );
+    // Only one model call: the draft comes from code, not the model.
+    expect(chat.requests).toHaveLength(1);
+  });
+
+  it("won't draft a reminder for someone who owes nothing", async () => {
+    model.set("tagih pak joko", { intent: "question" });
+    chat.steps = [call("draft_reminder", { contact: "pak joko" }), say((r) => `Pak Joko nggak punya tagihan. (${r.error})`)];
+    await send({ text: "tagih pak joko" });
+    expect(sender.last().kind === "text" && sender.last().body).toContain("nggak punya tagihan");
   });
 });
 

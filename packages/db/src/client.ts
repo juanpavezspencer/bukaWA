@@ -54,6 +54,20 @@ export async function findUserByPhoneHash(
 }
 
 /**
+ * Businesses whose summary is due, oldest first. Runs as the app role with no
+ * tenant selected; the scheduler_scan policy exposes only summary_schedules.
+ */
+export async function dueSummaryBusinesses(db: Db, now: Date, limit = 100): Promise<string[]> {
+  return withAppRole(db, async (tx) => {
+    await tx.execute(sql`select set_config('app.summary_scan', 'on', true)`);
+    const r = await tx.execute(
+      sql`select business_id from summary_schedules where enabled and next_run_at <= ${now.toISOString()}::timestamptz order by next_run_at limit ${limit}`,
+    );
+    return rows<{ business_id: string }>(r).map((x) => x.business_id);
+  });
+}
+
+/**
  * Run `fn` as the app role with no tenant selected. Tenant tables return no
  * rows here; use it only for non-tenant tables such as wa_inbound.
  */

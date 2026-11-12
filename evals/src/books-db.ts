@@ -4,7 +4,7 @@
  */
 import { withBusiness, type Db } from "@bukuwa/db";
 import { createTestBusiness, createTestDb } from "@bukuwa/db/testing";
-import { buildJournalDraft, postJournal, reverseJournal } from "@bukuwa/ledger";
+import { buildJournalDraft, findOrCreateContact, postJournal, reverseJournal } from "@bukuwa/ledger";
 import { buildFixture, FIXTURE_BUSINESS } from "./books-fixture.js";
 
 export interface FixtureBooks {
@@ -20,6 +20,10 @@ export async function seedFixtureBooks(): Promise<FixtureBooks> {
   const journalIds = new Map<string, string>();
   await withBusiness(db, businessId, async (tx) => {
     for (const e of buildFixture()) {
+      // As in production: every named counterparty becomes a contact.
+      const contactId = e.counterparty
+        ? await findOrCreateContact(tx, businessId, e.counterparty, e.kind === "sale" || e.kind === "receivable" || e.settles === "receivable" ? "customer" : "supplier")
+        : undefined;
       const posted = await postJournal(
         tx,
         buildJournalDraft(businessId, {
@@ -29,8 +33,10 @@ export async function seedFixtureBooks(): Promise<FixtureBooks> {
           description: e.description,
           source: "text",
           paymentMethod: e.paymentMethod,
-          accountCode: e.kind === "sale" || e.kind === "expense" ? e.accountCode : undefined,
+          accountCode: e.kind === "settlement" || e.kind.startsWith("owner_") ? undefined : e.accountCode,
           counterparty: e.counterparty,
+          contactId,
+          settles: e.settles,
         }),
       );
       journalIds.set(e.key, posted.id);

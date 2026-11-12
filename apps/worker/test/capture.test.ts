@@ -30,8 +30,11 @@ class FakeSender implements WaSender {
     this.sent.push(msg);
     return undefined;
   }
-  last() {
-    return this.sent.at(-1)!;
+  /** Bot replies to an owner's message are never templates. */
+  last(): Exclude<OutboundMessage, { kind: "template" }> {
+    const m = this.sent.at(-1)!;
+    if (m.kind === "template") throw new Error("unexpected template reply");
+    return m;
   }
   /** Reply id of the button or list row with this title in the last message. */
   button(title: string): string {
@@ -256,10 +259,10 @@ describe("text capture (F2) with confirm-before-post (F5)", () => {
     expect(n).toBe(0);
   });
 
-  it("does not post kinds handled in later milestones", async () => {
-    model.set("Bu Sari utang 350rb", { intent: "transaction", entries: [{ kind: "receivable", description: "Piutang Bu Sari", amount_text: "350rb", counterparty: "Bu Sari" }] });
-    await say({ text: "Bu Sari utang 350rb" });
-    expect(sender.last().body).toMatch(/Utang-piutang/);
+  it("does not post transfers between own accounts (not supported yet)", async () => {
+    model.set("pindahin 1jt dari bca ke gopay", { intent: "transaction", entries: [{ kind: "transfer_out", description: "Pindah saldo", amount_text: "1jt", payment_text: "bca" }] });
+    await say({ text: "pindahin 1jt dari bca ke gopay" });
+    expect(sender.last().body).toMatch(/Pindah saldo antar rekening belum bisa/);
     expect((await latestCapture()).status).toBe("failed");
     expect((await ledger()).journals).toHaveLength(0);
   });

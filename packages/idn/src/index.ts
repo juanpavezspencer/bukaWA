@@ -5,3 +5,5 @@ export * from "./mask.js";
 export * from "./qty.js";
 export * from "./spoken.js";
 export * from "./period.js";
+export * from "./contact.js";
+export * from "./summary-schedule.js";

@@ -1,26 +1,27 @@
 import { and, desc, eq, gt, sql } from "drizzle-orm";
-import { accounts, captures, categoryRules, type Tx } from "@bukuwa/db";
+import { accounts, captures, categoryRules, rows, type Tx } from "@bukuwa/db";
 import { categorize, categorizeItems, normalizePattern, patternsFor, type Account, type NormalizedEntry, type RawExtraction } from "@bukuwa/ai";
 import { formatRupiah } from "@bukuwa/idn";
-import { buildJournalDraft, daySummary, postJournal } from "@bukuwa/ledger";
+import { buildJournalDraft, daySummary, findOrCreateContact, postJournal, type OpenItemKind } from "@bukuwa/ledger";
 import type { OutboundMessage } from "@bukuwa/wa";
-import { askAmount, askPayment, captureCard, type CardEntry } from "./card.js";
+import { askAmount, askCounterparty, askPayment, askSettles, captureCard, settleOfferCard, type CardEntry } from "./card.js";
+import { balanceAfter, contactKindFor, DEBT_KINDS, debtNotes, resolveDebt, type DebtFields, type Missing } from "./debts.js";
 import { confirmCorrection, type StoredCorrection } from "./correction.js";
 
 /*
- * Capture lifecycle (F2, F5, F6):
- *   extracted              -> waiting for a missing amount or payment method
+ * Capture lifecycle (F2, F5, F6, F8):
+ *   extracted              -> waiting for a missing amount, name, debt side or payment method
  *   awaiting_confirmation  -> confirm card sent (OK / Ubah / Batal)
  *   confirmed              -> journals posted
  *   cancelled              -> owner cancelled or edited, or superseded
  * Nothing reaches the ledger except through confirmCapture().
  */
 
-const SUPPORTED_KINDS = new Set(["sale", "expense", "owner_capital", "owner_drawing"]);
+const SUPPORTED_KINDS = new Set(["sale", "expense", "owner_capital", "owner_drawing", "receivable", "payable", "settlement"]);
 /** A capture waiting for an answer is only matched to replies within this window. */
 const PENDING_WINDOW_MINUTES = 30;
 
-export interface StoredEntry {
+export interface StoredEntry extends DebtFields {
   kind: string;
   description: string;
   amountIdr: string | null;
@@ -39,7 +40,7 @@ export interface StoredEntry {
   accountCode: string | null;
   categorySource: "rule" | "model" | "default";
   lowConfidence: NormalizedEntry["lowConfidence"];
-  missing: NormalizedEntry["missing"];
+  missing: Missing[];
 }
 
 export interface StoredCapture {
@@ -59,7 +60,9 @@ async function loadAccounts(tx: Tx): Promise<Array<Account & { id: string }>> {
   return tx.select({ id: accounts.id, code: accounts.code, name: accounts.name, type: accounts.type }).from(accounts);
 }
 
-const DEFAULT_CATEGORY: Record<string, string> = { sale: "4100", expense: "6900" };
+const DEFAULT_CATEGORY: Record<string, string> = { sale: "4100", expense: "6900", receivable: "4100", payable: "6900" };
+/** Credit sales and purchases are categorized like the sale or expense they are. */
+const CATEGORY_KIND: Record<string, string> = { receivable: "sale", payable: "expense" };
 
 function toStored(
   e: NormalizedEntry,
@@ -94,12 +97,11 @@ function cardEntries(stored: StoredCapture, accts: Account[]): CardEntry[] {
     description: e.description,
     amountIdr: BigInt(e.amountIdr!),
     date: e.date,
-    counterparty: e.counterparty,
-    paymentMethod: e.paymentMethod!,
-    categoryName:
-      e.kind === "sale" ? nameByCode.get(e.accountCode ?? "4100") ?? null
-      : e.kind === "expense" ? nameByCode.get(e.accountCode ?? "6900") ?? null
-      : null,
+    counterparty: e.contactName ?? e.counterparty,
+    paymentMethod: e.paymentMethod,
+    settles: e.settles ?? null,
+    categoryName: DEFAULT_CATEGORY[e.kind] ? nameByCode.get(e.accountCode ?? DEFAULT_CATEGORY[e.kind]!) ?? null : null,
+    notes: debtNotes(e),
     items: e.items.map((i) => ({
       name: i.name,
       qtyText: i.qtyText,
@@ -119,20 +121,36 @@ function splitsFor(e: StoredEntry): Array<{ accountCode: string; amountIdr: bigi
   return splits.reduce((s, x) => s + x.amountIdr, 0n) === BigInt(e.amountIdr) ? splits : undefined;
 }
 
+async function currentBusinessId(tx: Tx): Promise<string> {
+  return rows<{ id: string }>(await tx.execute(sql`select app_current_business_id()::text as id`))[0]!.id;
+}
+
 /** Decide the next status and reply for a capture whose entries are stored. */
 async function advance(tx: Tx, captureId: string, stored: StoredCapture): Promise<OutboundMessage[]> {
-  let status: CaptureRow["status"];
+  const businessId = await currentBusinessId(tx);
+  for (const e of stored.entries) await resolveDebt(tx, businessId, e);
+  const first = (m: Missing) => stored.entries.find((e) => e.missing.includes(m));
+
+  let status: CaptureRow["status"] = "extracted";
   let reply: OutboundMessage;
-  if (stored.entries.some((e) => e.missing.includes("amount"))) {
-    status = "extracted";
+  if (first("amount")) {
     reply = askAmount();
-  } else if (stored.entries.some((e) => e.missing.includes("payment_method"))) {
-    status = "extracted";
-    const e = stored.entries.find((x) => x.missing.includes("payment_method"))!;
+  } else if (first("counterparty")) {
+    const e = first("counterparty")!;
+    reply = askCounterparty(e.kind, formatRupiah(BigInt(e.amountIdr!)));
+  } else if (first("settles")) {
+    const e = first("settles")!;
+    reply = askSettles(captureId, e.counterparty!, formatRupiah(BigInt(e.amountIdr!)));
+  } else if (first("payment_method")) {
+    const e = first("payment_method")!;
     reply = askPayment(captureId, `${e.description} ${formatRupiah(BigInt(e.amountIdr!))}`);
   } else {
     status = "awaiting_confirmation";
-    reply = captureCard(captureId, cardEntries(stored, await loadAccounts(tx)), stored.notes);
+    const cards = cardEntries(stored, await loadAccounts(tx));
+    const only = stored.entries.length === 1 ? stored.entries[0]! : undefined;
+    reply = only?.offer
+      ? settleOfferCard(captureId, cards[0]!, { ...only.offer, name: only.contactName! })
+      : captureCard(captureId, cards, stored.notes);
   }
   await tx
     .update(captures)
@@ -162,7 +180,7 @@ export async function createCapture(tx: Tx, c: NewCapture): Promise<OutboundMess
   const supported = c.entries.filter((e) => SUPPORTED_KINDS.has(e.kind));
   const notes: string[] = [];
   if (supported.length < c.entries.length) {
-    notes.push("Catatan: utang-piutang dan pindah saldo belum bisa aku catat, segera hadir ya.");
+    notes.push("Catatan: pindah saldo antar rekening belum bisa aku catat, segera hadir ya.");
   }
 
   // A new transaction supersedes any capture still waiting for an answer.
@@ -184,6 +202,12 @@ export async function createCapture(tx: Tx, c: NewCapture): Promise<OutboundMess
     ...(c.document ? { documentType: c.document.type, visibleText: c.document.visibleText } : {}),
     raw: c.raw,
     entries: supported.map((e) => {
+      if (e.kind === "settlement") return toStored(e, undefined, "default", null);
+      if (CATEGORY_KIND[e.kind]) {
+        // No item splits on credit: one category for the whole debt.
+        const cat = categorize({ ...e, kind: CATEGORY_KIND[e.kind] as NormalizedEntry["kind"] }, rules, accts);
+        return toStored(e, cat.accountCode, cat.source, null);
+      }
       const cat = categorize(e, rules, accts);
       // Items without their own rule take the model's suggestion (or the default),
       // not a rule that matched some other item on the same receipt.
@@ -216,7 +240,7 @@ export async function createCapture(tx: Tx, c: NewCapture): Promise<OutboundMess
       {
         kind: "text",
         body: c.entries.length
-          ? "Utang-piutang dan pindah saldo belum bisa aku catat, segera hadir ya. Untuk sekarang aku bisa catat penjualan, pengeluaran, modal dan prive."
+          ? "Pindah saldo antar rekening belum bisa aku catat, segera hadir ya. Untuk sekarang aku bisa catat penjualan, pengeluaran, utang-piutang, modal dan prive."
           : "Maaf, aku belum nangkep transaksinya. Coba tulis seperti ini: \"jual nasi box 25 x 18rb tf BCA\" atau \"belanja ayam 175rb cash\".",
       },
     ];
@@ -267,6 +291,49 @@ export async function answerPayment(tx: Tx, captureId: string, method: string): 
   return advance(tx, row.id, stored);
 }
 
+export async function answerCounterparty(tx: Tx, captureId: string, name: string): Promise<OutboundMessage[]> {
+  const row = await lockCapture(tx, captureId);
+  if (!row || row.status !== "extracted") return [ALREADY_DONE];
+  const stored = row.extractionJson as StoredCapture;
+  for (const e of stored.entries) if (e.missing.includes("counterparty")) e.counterparty = name;
+  return advance(tx, row.id, stored);
+}
+
+export async function answerSettles(tx: Tx, captureId: string, settles: OpenItemKind): Promise<OutboundMessage[]> {
+  const row = await lockCapture(tx, captureId);
+  if (!row || row.status !== "extracted") return [ALREADY_DONE];
+  const stored = row.extractionJson as StoredCapture;
+  for (const e of stored.entries) if (e.missing.includes("settles")) e.settles = settles;
+  return advance(tx, row.id, stored);
+}
+
+/**
+ * "Ya, pelunasan" on a sale/expense from a contact with an open debt: the card
+ * showed the amount, the contact and the debt, so this is the owner's
+ * confirmation of the entry as that debt's payment.
+ */
+export async function confirmAsSettlement(
+  tx: Tx,
+  ctx: { businessId: string; userId: string; today: string },
+  captureId: string,
+): Promise<OutboundMessage[]> {
+  const row = await lockCapture(tx, captureId);
+  if (!row || row.status !== "awaiting_confirmation") return [ALREADY_DONE];
+  const stored = row.extractionJson as StoredCapture;
+  const e = stored.entries[0];
+  if (stored.entries.length !== 1 || !e?.offer) return [ALREADY_DONE];
+  Object.assign(e, {
+    kind: "settlement",
+    settles: e.offer.settles,
+    counterparty: e.contactName ?? e.counterparty,
+    accountCode: null,
+    items: e.items.map((i) => ({ ...i, accountCode: null })),
+    offer: null,
+  });
+  await tx.update(captures).set({ extractionJson: stored }).where(eq(captures.id, row.id));
+  return confirmCapture(tx, ctx, captureId);
+}
+
 export async function cancelCapture(tx: Tx, captureId: string, mode: "edit" | "cancel"): Promise<OutboundMessage[]> {
   const row = await lockCapture(tx, captureId);
   if (!row || (row.status !== "awaiting_confirmation" && row.status !== "extracted")) return [ALREADY_DONE];
@@ -299,9 +366,15 @@ export async function confirmCapture(
   const stored = row.extractionJson as StoredCapture;
 
   let firstJournalId: string | undefined;
+  const balanceLines: string[] = [];
   for (const [i, e] of stored.entries.entries()) {
+    const contactId = e.counterparty?.trim()
+      ? await findOrCreateContact(tx, ctx.businessId, e.counterparty, contactKindFor(e.kind, e.settles))
+      : undefined;
     const draft = buildJournalDraft(ctx.businessId, {
       kind: e.kind as Parameters<typeof buildJournalDraft>[1]["kind"],
+      contactId,
+      settles: e.settles ?? undefined,
       amountIdr: BigInt(e.amountIdr!),
       date: e.date,
       description: e.description,
@@ -315,6 +388,8 @@ export async function confirmCapture(
     });
     const posted = await postJournal(tx, draft);
     firstJournalId ??= posted.id;
+    const debtKind = e.kind === "settlement" ? e.settles : e.kind === "receivable" || e.kind === "payable" ? e.kind : null;
+    if (contactId && debtKind) balanceLines.push(await balanceAfter(tx, ctx.businessId, contactId, debtKind, e.contactName ?? e.counterparty!));
   }
 
   // Learn categories the owner just confirmed.
@@ -355,8 +430,8 @@ export async function confirmCapture(
     {
       kind: "text",
       body:
-        `Sip, tercatat ✅\n\nHari ini: pemasukan ${formatRupiah(today.incomeIdr)}, ` +
-        `pengeluaran ${formatRupiah(today.expenseIdr)}.`,
+        `Sip, tercatat ✅\n\n${balanceLines.map((l) => `${l}\n`).join("")}` +
+        `Hari ini: pemasukan ${formatRupiah(today.incomeIdr)}, pengeluaran ${formatRupiah(today.expenseIdr)}.`,
     },
   ];
 }

@@ -34,6 +34,10 @@ export interface PostableEntry {
    */
   splits?: Array<{ accountCode: string; amountIdr: bigint }>;
   counterparty?: string | null;
+  /** The contact the entry is with; required for receivable, payable and settlement. */
+  contactId?: string | null;
+  /** Settlement only: which debt is being paid. */
+  settles?: "receivable" | "payable";
   idempotencyKey?: string;
   createdBy?: string;
 }
@@ -44,6 +48,8 @@ const EWALLET = "1120";
 /** The money accounts a payment method can move. */
 export const CASH_ACCOUNT_CODES = [CASH, BANK, EWALLET] as const;
 const INVENTORY = "1300";
+export const RECEIVABLE_ACCOUNT = "1200";
+export const PAYABLE_ACCOUNT = "2100";
 const OWNER_EQUITY = "3100";
 const OWNER_DRAWINGS = "3200";
 const DEFAULT_INCOME = "4100";
@@ -73,6 +79,7 @@ export function buildJournalDraft(businessId: string, e: PostableEntry): Journal
     throw new LedgerError("INVALID_AMOUNT", "amount must be a positive integer rupiah");
   }
   const memo = e.counterparty?.trim() || null;
+  const contact = e.contactId ? { contactId: e.contactId } : {};
   const header = {
     businessId,
     date: e.date,
@@ -84,14 +91,22 @@ export function buildJournalDraft(businessId: string, e: PostableEntry): Journal
   const pair = (debitCode: string, creditCode: string): JournalDraft => ({
     ...header,
     lines: [
-      { accountCode: debitCode, debit: e.amountIdr, memo },
-      { accountCode: creditCode, credit: e.amountIdr, memo },
+      { accountCode: debitCode, debit: e.amountIdr, memo, ...contact },
+      { accountCode: creditCode, credit: e.amountIdr, memo, ...contact },
     ],
   });
 
-  const supported = ["sale", "expense", "owner_capital", "owner_drawing"];
-  if (!supported.includes(e.kind)) {
+  if (e.kind === "transfer_in" || e.kind === "transfer_out") {
     throw new LedgerError("UNSUPPORTED_KIND", `${e.kind} entries are not supported yet`);
+  }
+  if (e.kind === "receivable" || e.kind === "payable" || e.kind === "settlement") {
+    // Open balances are kept per contact, so a debt without one can't be tracked.
+    if (!e.contactId) throw new LedgerError("MISSING_CONTACT", `${e.kind} needs a contact`);
+  }
+  if (e.kind === "receivable") return pair(RECEIVABLE_ACCOUNT, category("sale", e.accountCode));
+  if (e.kind === "payable") return pair(category("expense", e.accountCode), PAYABLE_ACCOUNT);
+  if (e.kind === "settlement" && !e.settles) {
+    throw new LedgerError("MISSING_SETTLEMENT_SIDE", "say whether a receivable or a payable is being paid");
   }
   const pay = paymentAccountCode(e.paymentMethod);
   if (!pay) throw new LedgerError("MISSING_PAYMENT_METHOD", "payment method is unknown");
@@ -111,9 +126,10 @@ export function buildJournalDraft(businessId: string, e: PostableEntry): Journal
       throw new LedgerError("SPLIT_MISMATCH", `splits add up to ${sum}, entry amount is ${e.amountIdr}`);
     }
     const categoryLines = [...byAccount].map(([accountCode, amt]) =>
-      e.kind === "sale" ? { accountCode, credit: amt, memo } : { accountCode, debit: amt, memo },
+      e.kind === "sale" ? { accountCode, credit: amt, memo, ...contact } : { accountCode, debit: amt, memo, ...contact },
     );
-    const payLine = e.kind === "sale" ? { accountCode: pay, debit: e.amountIdr, memo } : { accountCode: pay, credit: e.amountIdr, memo };
+    const payLine =
+      e.kind === "sale" ? { accountCode: pay, debit: e.amountIdr, memo, ...contact } : { accountCode: pay, credit: e.amountIdr, memo, ...contact };
     return { ...header, lines: e.kind === "sale" ? [payLine, ...categoryLines] : [...categoryLines, payLine] };
   }
 
@@ -124,6 +140,8 @@ export function buildJournalDraft(businessId: string, e: PostableEntry): Journal
       return pair(category("expense", e.accountCode), pay);
     case "owner_capital":
       return pair(pay, OWNER_EQUITY);
+    case "settlement":
+      return e.settles === "receivable" ? pair(pay, RECEIVABLE_ACCOUNT) : pair(PAYABLE_ACCOUNT, pay);
     default:
       return pair(OWNER_DRAWINGS, pay);
   }

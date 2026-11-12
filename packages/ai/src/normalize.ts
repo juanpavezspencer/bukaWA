@@ -94,7 +94,8 @@ export function normalizeEntry(raw: RawEntry, message: string, today: string, th
 
   const missing: NormalizedEntry["missing"] = [];
   if (amountIdr === null || amountIdr <= 0n) missing.push("amount");
-  if (paymentMethod === null) missing.push("payment_method");
+  // Debts on credit move no money yet, so they need no payment method.
+  if (paymentMethod === null && raw.kind !== "receivable" && raw.kind !== "payable") missing.push("payment_method");
 
   return {
     kind: raw.kind,

@@ -30,7 +30,7 @@ import {
   noSpeechToText,
   SttUnavailableError,
 } from "@bukuwa/ai";
-import { parsePaymentMethod, parseRupiah } from "@bukuwa/idn";
+import { parsePaymentMethod, parseRupiah, parseSummaryRequest, type SummaryRequest } from "@bukuwa/idn";
 import {
   IMAGE_MIME_TYPES,
   inboundInput,
@@ -52,13 +52,17 @@ import { createBusinessFromOnboarding, localDate } from "./business.js";
 import { parseCaptureReply } from "./capture/card.js";
 import {
   answerAmount,
+  answerCounterparty,
   answerPayment,
+  answerSettles,
   cancelCapture,
+  confirmAsSettlement,
   confirmCapture,
   createCapture,
   findPendingCapture,
 } from "./capture/flow.js";
 import { onboardingStep, type OnboardingState } from "./onboarding.js";
+import { handleSummaryRequest } from "./summary.js";
 
 export interface InboundDeps {
   db: Db;
@@ -126,6 +130,8 @@ type Plan =
   | { kind: "capture_action" }
   | { kind: "answer_amount"; captureId: string; amount: bigint }
   | { kind: "answer_payment"; captureId: string; method: string }
+  | { kind: "answer_counterparty"; captureId: string; name: string }
+  | { kind: "summary"; request: SummaryRequest }
   | { kind: "correction"; proposal: CorrectionProposal; summary: JournalSummary; modelVersion: string; text: string }
   | {
       kind: "new_capture";
@@ -190,6 +196,15 @@ async function planText(
       text,
     });
     if (r.kind === "proposal") return { kind: "correction", proposal: r.proposal, summary: r.summary, modelVersion: r.modelVersion, text };
+    if (r.kind === "reminder") {
+      return {
+        kind: "reply",
+        replies: [
+          { kind: "text", body: `Ini draft pengingatnya, tinggal diteruskan ke ${r.contactName} ya 👇` },
+          { kind: "text", body: r.text },
+        ],
+      };
+    }
     return { kind: "reply", replies: [{ kind: "text", body: r.text }] };
   }
   if (routed.intent !== "transaction") {
@@ -298,11 +313,19 @@ async function plan(deps: InboundDeps, s: Sender, waMessageId: string, today: st
     if (missing.includes("amount") && amount !== null && amount > 0n) {
       return { kind: "answer_amount", captureId: pending.id, amount };
     }
+    const words = text.split(/\s+/).length;
+    if (!missing.includes("amount") && missing.includes("counterparty") && amount === null && words <= 4 && /\p{L}/u.test(text) && !/[\d?]/.test(text)) {
+      return { kind: "answer_counterparty", captureId: pending.id, name: text.replace(/[.!?]+$/, "") };
+    }
     const method = parsePaymentMethod(text);
-    if (!missing.includes("amount") && missing.includes("payment_method") && method && text.split(/\s+/).length <= 3) {
+    if (!missing.includes("amount") && !missing.includes("counterparty") && missing.includes("payment_method") && method && words <= 3) {
       return { kind: "answer_payment", captureId: pending.id, method };
     }
   }
+
+  // "ringkasan harian jam 9 malam", "stop ringkasan", "rekap": settings, parsed by code.
+  const summary = parseSummaryRequest(text);
+  if (summary) return { kind: "summary", request: summary };
 
   try {
     return await planText(deps, s, text, today, { source: "text" });
@@ -391,6 +414,16 @@ export async function processInbound(deps: InboundDeps, waMessageId: string): Pr
         case "answer_payment":
           replies = await answerPayment(tx, p.captureId, p.method);
           break;
+        case "summary":
+          replies = await handleSummaryRequest(
+            tx,
+            { businessId: ctx.businessId, businessName: sender.businessName ?? "usahamu", today, timezone: sender.timezone, now: now() },
+            p.request,
+          );
+          break;
+        case "answer_counterparty":
+          replies = await answerCounterparty(tx, p.captureId, p.name);
+          break;
         case "correction":
           replies = await createCorrection(tx, {
             businessId: ctx.businessId,
@@ -421,7 +454,9 @@ export async function processInbound(deps: InboundDeps, waMessageId: string): Pr
           event = `capture.${a.action}`;
           replies =
             a.action === "ok" ? await confirmCapture(tx, ctx, a.captureId)
+            : a.action === "settle" ? await confirmAsSettlement(tx, ctx, a.captureId)
             : a.action === "pay" ? await answerPayment(tx, a.captureId, a.method)
+            : a.action === "side" ? await answerSettles(tx, a.captureId, a.settles)
             : await cancelCapture(tx, a.captureId, a.action);
           break;
         }

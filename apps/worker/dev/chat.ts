@@ -11,10 +11,11 @@ import { eq } from "drizzle-orm";
 import { businesses, hashPii, onboardingSessions, piiKeysFromBase64, toE164, users, waInbound, withBusiness, type Db } from "@bukuwa/db";
 import { createTestDb } from "@bukuwa/db/testing";
 import { trialBalance } from "@bukuwa/ledger";
-import type { MediaFetcher, OutboundMessage, WaSender } from "@bukuwa/wa";
+import { messageLogBody, type MediaFetcher, type OutboundMessage, type WaSender } from "@bukuwa/wa";
 import { aiConfigFromEnv, anthropicChatModel, anthropicModel } from "@bukuwa/ai";
 import { processInbound, type InboundDeps } from "../src/inbound.js";
 import { memoryMediaStore } from "../src/media/store.js";
+import { runDueSummaries } from "../src/summary.js";
 import { offlineModel } from "./offline-model.js";
 
 const useClaude = Boolean(process.env.ANTHROPIC_API_KEY);
@@ -26,7 +27,8 @@ const keys = piiKeysFromBase64(randomBytes(32).toString("base64"), randomBytes(3
 const outbox: Array<{ to: string; msg: OutboundMessage }> = [];
 const sender: WaSender = {
   async send(to, msg) {
-    outbox.push({ to, msg });
+    // The browser shows templates as the text the owner would see.
+    outbox.push({ to, msg: msg.kind === "template" ? { kind: "text", body: messageLogBody(msg) } : msg });
     return `wamid.dev.out.${outbox.length}`;
   },
 };
@@ -115,6 +117,13 @@ app.post("/send", async (c) => {
   const to = toE164(from);
   return c.json({ replies: outbox.slice(before).filter((o) => o.to === to).map((o) => o.msg), state: json(await stateFor(from)) });
 });
+/** Scheduled summaries (F9): run one scheduler tick, optionally pretending it is `at` (ISO time). */
+app.post("/tick", async (c) => {
+  const at = c.req.query("at");
+  const before = outbox.length;
+  const result = await runDueSummaries(deps, at ? new Date(at) : new Date());
+  return c.json({ ...result, sent: outbox.slice(before) });
+});
 app.get("/state", async (c) => c.json(json(await stateFor(c.req.query("from") ?? ""))));
 app.post("/reset", async (c) => {
   await reset();
@@ -183,7 +192,7 @@ fileEl.onchange = async () => {
   const f = fileEl.files[0]; if (!f) return;
   const t = document.getElementById('t'); const caption = t.value.trim(); t.value = '';
   const base64 = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.readAsDataURL(f); });
-  const d = bubble('in', (f.type.startsWith('audio/') ? '🎤 ' : '📎 ') + f.name + (caption ? '\n' + caption : ''));
+  const d = bubble('in', (f.type.startsWith('audio/') ? '🎤 ' : '📎 ') + f.name + (caption ? '\\n' + caption : ''));
   if (f.type.startsWith('image/')) { const img = document.createElement('img'); img.src = URL.createObjectURL(f); d.prepend(img); }
   fileEl.value = '';
   const r = await fetch('/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ from: from.value, upload: { base64, mimeType: f.type || 'application/octet-stream', caption } }) });

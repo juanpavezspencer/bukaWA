@@ -5,7 +5,7 @@ import { businesses, captures, hashPii, journalLines, journals, piiKeysFromBase6
 import { createTestDb } from "@bukuwa/db/testing";
 import { masked, type SpeechToText } from "@bukuwa/ai";
 import { trialBalance } from "@bukuwa/ledger";
-import { MediaTooLargeError, type MediaFetcher, type OutboundMessage, type WaSender } from "@bukuwa/wa";
+import { MediaTooLargeError, messageText, type MediaFetcher, type OutboundMessage, type WaSender } from "@bukuwa/wa";
 import { processInbound, type InboundDeps } from "../src/inbound.js";
 import { memoryMediaStore } from "../src/media/store.js";
 import { aiConfig, ScriptedModel } from "./fake-model.js";
@@ -21,12 +21,12 @@ class FakeSender implements WaSender {
     return undefined;
   }
   bodies() {
-    return this.sent.map((m) => m.body);
+    return this.sent.map(messageText);
   }
   button(title: string): string {
     const m = this.sent.at(-1)!;
     const hit = (m.kind === "buttons" ? m.buttons : []).find((o) => o.title === title);
-    if (!hit) throw new Error(`no "${title}" in: ${m.body}`);
+    if (!hit) throw new Error(`no "${title}" in: ${messageText(m)}`);
     return hit.id;
   }
 }
@@ -141,7 +141,7 @@ describe("photo capture (F3, Flow A)", () => {
     expect(sender.bodies()[0]).toMatch(/lagi dibaca/);
     expect([...store.objects.keys()]).toEqual([`${bizId}/wamid.media.7.jpg`]);
     expect(model.calls.at(-1)!.attachments).toBe(1);
-    expect(sender.sent.at(-1)!.body).toContain("Pemasukan Rp 450.000 dari SARI W (transfer BCA), 12 Nov");
+    expect(messageText(sender.sent.at(-1)!)).toContain("Pemasukan Rp 450.000 dari SARI W (transfer BCA), 12 Nov");
     expect((await withBusiness(db, bizId, (tx) => tx.select().from(journals))).length).toBe(0);
 
     const cap = await latestCapture();
@@ -162,13 +162,13 @@ describe("photo capture (F3, Flow A)", () => {
   it("does not trust an amount that isn't on the photo; asks instead", async () => {
     model.vision!.entries[0]!.amount_text = "Rp 540.000";
     await say({ image: {} });
-    expect(sender.sent.at(-1)!.body).toMatch(/Nominalnya berapa/);
+    expect(messageText(sender.sent.at(-1)!)).toMatch(/Nominalnya berapa/);
   });
 
   it("says so when the picture isn't a financial document", async () => {
     model.vision = { document_type: "not_a_document", visible_text: "", entries: [] };
     await say({ image: {} });
-    expect(sender.sent.at(-1)!.body).toMatch(/nggak nemu transaksi/);
+    expect(messageText(sender.sent.at(-1)!)).toMatch(/nggak nemu transaksi/);
     expect(await latestCapture()).toBeUndefined();
     expect(store.objects.size).toBe(1); // the original is still kept
   });
@@ -176,7 +176,7 @@ describe("photo capture (F3, Flow A)", () => {
   it("refuses files over the size limit", async () => {
     fetcher.files.set("m1", new MediaTooLargeError(50_000_000));
     await say({ image: {} });
-    expect(sender.sent.at(-1)!.body).toMatch(/kegedean/);
+    expect(messageText(sender.sent.at(-1)!)).toMatch(/kegedean/);
   });
 
   it("processes a redelivered photo once", async () => {
@@ -221,7 +221,7 @@ describe("voice capture (F4, Flow B)", () => {
     await say({ voice: true, mediaId: "v1" });
 
     expect(sender.bodies()[0]).toMatch(/didengerin/);
-    const card = sender.sent.at(-1)!.body;
+    const card = messageText(sender.sent.at(-1)!);
     expect(card).toContain("Pengeluaran Rp 275.000 (cash), 12 Nov");
     expect(card).toContain("• ayam 5 kilo Rp 175.000 (HPP / Bahan baku)");
     expect(card).toContain("• token listrik Rp 100.000 (Listrik & air)");
@@ -250,13 +250,13 @@ describe("voice capture (F4, Flow B)", () => {
     fetcher.files.set("v2", { bytes: new TextEncoder().encode("untung minggu ini berapa"), mimeType: "audio/ogg" });
     model.set("untung minggu ini berapa", { intent: "question" });
     await say({ voice: true, mediaId: "v2" });
-    expect(sender.sent.at(-1)!.body).toMatch(/tanya laporan/);
+    expect(messageText(sender.sent.at(-1)!)).toMatch(/tanya laporan/);
   });
 
   it("replies 'not yet' without downloading when no speech-to-text is configured", async () => {
     deps.ai.stt = undefined;
     await say({ voice: true, mediaId: "v1" });
-    expect(sender.sent.at(-1)!.body).toMatch(/Voice note belum bisa/);
+    expect(messageText(sender.sent.at(-1)!)).toMatch(/Voice note belum bisa/);
     expect(fetcher.calls).toEqual([]);
   });
 });
@@ -264,12 +264,12 @@ describe("voice capture (F4, Flow B)", () => {
 describe("other inbound types", () => {
   it("explains what it can read", async () => {
     await say({ sticker: true });
-    expect(sender.sent.at(-1)!.body).toMatch(/Yang ini belum bisa/);
+    expect(messageText(sender.sent.at(-1)!)).toMatch(/Yang ini belum bisa/);
   });
 
   it("without media storage configured, keeps the old 'not yet' reply", async () => {
     deps.media = undefined;
     await say({ image: {} });
-    expect(sender.sent.at(-1)!.body).toMatch(/segera bisa aku baca/);
+    expect(messageText(sender.sent.at(-1)!)).toMatch(/segera bisa aku baca/);
   });
 });

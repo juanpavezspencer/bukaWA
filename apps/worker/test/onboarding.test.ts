@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { OutboundMessage } from "@bukuwa/wa";
+import { messageText, type OutboundMessage } from "@bukuwa/wa";
 import { onboardingStep, type OnboardingState } from "../src/onboarding.js";
 
 const opts = { privacyPolicyUrl: "https://bukuwa.id/privasi", now: () => new Date("2026-11-12T03:00:00Z") };
@@ -15,7 +15,7 @@ function run(state: OnboardingState, ...inputs: Array<{ text?: string; replyId?:
 }
 
 const start: OnboardingState = { step: "new" };
-const text = (m: OutboundMessage) => (m.kind === "text" ? m.body : m.body);
+const text = (m: OutboundMessage) => messageText(m);
 
 describe("onboardingStep", () => {
   it("greets a new number and asks for consent with the privacy link", () => {
