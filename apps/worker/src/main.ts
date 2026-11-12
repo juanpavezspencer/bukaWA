@@ -3,7 +3,7 @@ import pg from "pg";
 import PgBoss from "pg-boss";
 import * as schema from "@bukuwa/db";
 import { piiKeysFromBase64, type Db } from "@bukuwa/db";
-import { aiConfigFromEnv, anthropicModel } from "@bukuwa/ai";
+import { aiConfigFromEnv, anthropicChatModel, anthropicModel } from "@bukuwa/ai";
 import { cloudApiMediaFetcher, cloudApiSender, WA_INBOUND_QUEUE } from "@bukuwa/wa";
 import { loadConfig } from "./config.js";
 import { processInbound } from "./inbound.js";
@@ -23,7 +23,7 @@ const deps = {
   keys: piiKeysFromBase64(config.PII_HMAC_KEY, config.PII_ENC_KEY),
   // Credentials resolve from the environment (ANTHROPIC_API_KEY or a profile).
   // No speech-to-text provider yet (spec 7.4: choose by benchmark), so voice notes get a "not yet" reply.
-  ai: { model: anthropicModel(), config: aiConfigFromEnv() },
+  ai: { model: anthropicModel(), chat: anthropicChatModel(), config: aiConfigFromEnv() },
   media: {
     fetcher: cloudApiMediaFetcher({
       accessToken: config.WA_ACCESS_TOKEN,

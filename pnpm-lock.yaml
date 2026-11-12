@@ -264,9 +264,18 @@ importers:
       '@bukuwa/ai':
         specifier: workspace:*
         version: link:../packages/ai
+      '@bukuwa/db':
+        specifier: workspace:*
+        version: link:../packages/db
       '@bukuwa/idn':
         specifier: workspace:*
         version: link:../packages/idn
+      '@bukuwa/ledger':
+        specifier: workspace:*
+        version: link:../packages/ledger
+      '@bukuwa/worker':
+        specifier: workspace:*
+        version: link:../apps/worker
     devDependencies:
       '@resvg/resvg-js':
         specifier: ^2.6.2

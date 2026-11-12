@@ -1,5 +1,5 @@
 import type { NormalizedEntry } from "@bukuwa/ai";
-import type { ImageCase, TextCase } from "./types.js";
+import type { ImageCase, QuestionCase, TextCase } from "./types.js";
 
 /** Fields scored for F2/F4 (spec: amount, type, payment method) plus date. */
 export const FIELDS = ["kind", "amount", "payment_method", "date"] as const;
@@ -16,6 +16,7 @@ export interface CaseResult {
   got: {
     intent: string;
     entries: Array<{ kind: string; amount_idr: string | null; payment_method: string | null; date: string; counterparty?: string | null }>;
+    outcome?: unknown;
   };
 }
 
@@ -85,7 +86,12 @@ const pct = (n: number, d: number) => (d === 0 ? 100 : Math.round((1000 * n) / d
 
 export function summarize(results: CaseResult[], fields: readonly string[] = FIELDS): Summary {
   const entries = results.flatMap((r) => r.fields);
-  const fieldAccuracy = Object.fromEntries(fields.map((f) => [f, pct(entries.filter((e) => e[f]).length, entries.length)]));
+  const fieldAccuracy = Object.fromEntries(
+    fields.map((f) => {
+      const scored = entries.filter((e) => f in e);
+      return [f, pct(scored.filter((e) => e[f]).length, scored.length)];
+    }),
+  );
   return { cases: results.length, intentAccuracy: pct(results.filter((r) => r.intentOk).length, results.length), fieldAccuracy };
 }
 
@@ -101,4 +107,47 @@ export function regressions(current: Summary, baseline: Summary, maxDrop = 2): s
     }
   }
   return out;
+}
+
+// --- questions (F7) and corrections (Flow D) ---------------------------------------
+
+/** Question-set metrics: answers quote the right amounts, corrections target the right entry. */
+export const QUESTION_FIELDS = ["answer", "unsupported", "correction_target", "correction_change"] as const;
+
+/** "Rp 1.250.000", "Rp1.250.000" and "1.250.000" all count as quoting Rp 1.250.000. */
+export function quotesAmount(answer: string, amount: string): boolean {
+  const digits = amount.replace(/\D/g, "");
+  const nums = answer.match(/\d[\d.,]*/g) ?? [];
+  return nums.some((n) => n.replace(/[.,]00$/, "").replace(/\D/g, "") === digits);
+}
+
+export type QuestionOutcome =
+  | { kind: "answer"; text: string }
+  | { kind: "proposal"; journalId: string; action: string; amountIdr?: string; paymentCode?: string }
+  | { kind: "not_routed"; intent: string };
+
+/**
+ * One result per case, with exactly one scored field: answer (all amounts
+ * quoted), unsupported (says so, quotes no money amount), or for corrections
+ * correction_target and correction_change.
+ */
+export function scoreQuestionCase(c: QuestionCase, out: QuestionOutcome, journalIds: Map<string, string>): CaseResult {
+  const got = { intent: out.kind === "not_routed" ? out.intent : c.expected.intent, entries: [], outcome: out } as CaseResult["got"];
+  const intentOk = out.kind !== "not_routed";
+  const e = c.expected;
+  let fields: Record<string, boolean>;
+  if (e.kind === "answer") {
+    fields = { answer: out.kind === "answer" && (e.must_include ?? []).every((a) => quotesAmount(out.text, a)) };
+  } else if (e.kind === "unsupported") {
+    fields = { unsupported: out.kind === "answer" && !/rp\s?\d/i.test(out.text) };
+  } else {
+    const x = e.correction!;
+    const target = out.kind === "proposal" && out.journalId === journalIds.get(x.entry_key) && out.action === x.action;
+    fields = {
+      correction_target: target,
+      correction_change:
+        target && out.kind === "proposal" && (out.amountIdr ?? null) === (x.amount_idr ?? null) && (out.paymentCode ?? null) === (x.payment_code ?? null),
+    };
+  }
+  return { id: c.id, intentOk, fields: [fields], got };
 }
