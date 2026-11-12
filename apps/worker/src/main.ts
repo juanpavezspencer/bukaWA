@@ -4,9 +4,10 @@ import PgBoss from "pg-boss";
 import * as schema from "@bukuwa/db";
 import { piiKeysFromBase64, type Db } from "@bukuwa/db";
 import { aiConfigFromEnv, anthropicModel } from "@bukuwa/ai";
-import { cloudApiSender, WA_INBOUND_QUEUE } from "@bukuwa/wa";
+import { cloudApiMediaFetcher, cloudApiSender, WA_INBOUND_QUEUE } from "@bukuwa/wa";
 import { loadConfig } from "./config.js";
 import { processInbound } from "./inbound.js";
+import { fsMediaStore } from "./media/store.js";
 
 const config = loadConfig();
 const pool = new pg.Pool({ connectionString: config.DATABASE_URL });
@@ -21,7 +22,16 @@ const deps = {
   }),
   keys: piiKeysFromBase64(config.PII_HMAC_KEY, config.PII_ENC_KEY),
   // Credentials resolve from the environment (ANTHROPIC_API_KEY or a profile).
+  // No speech-to-text provider yet (spec 7.4: choose by benchmark), so voice notes get a "not yet" reply.
   ai: { model: anthropicModel(), config: aiConfigFromEnv() },
+  media: {
+    fetcher: cloudApiMediaFetcher({
+      accessToken: config.WA_ACCESS_TOKEN,
+      apiVersion: config.WA_GRAPH_API_VERSION,
+      maxBytes: config.MEDIA_MAX_BYTES,
+    }),
+    store: fsMediaStore(config.MEDIA_DIR),
+  },
   config: {
     privacyPolicyUrl: config.PRIVACY_POLICY_URL,
     consentVersion: config.CONSENT_VERSION,

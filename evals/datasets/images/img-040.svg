@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="380" height="345" viewBox="0 0 380 345">
+<rect width="100%" height="100%" fill="#e9e9e9"/>
+<g><rect x="4" y="4" width="372" height="337" fill="#fffdf6" rx="6"/>
+<g font-family="Courier New, Courier, monospace" fill="#2a2a2a">
+<text x="190" y="36" font-size="18" font-weight="700" text-anchor="middle">PASAR SEGAR MART</text>
+<text x="190" y="64" font-size="13" font-weight="400" text-anchor="middle">Jl. Raya Pasar No. 12</text>
+<text x="190" y="87" font-size="13" font-weight="400" text-anchor="middle">12 Nov 2026 17:35 WIB</text>
+<text x="190" y="110" font-size="13" font-weight="400" text-anchor="middle">--------------------------------</text>
+<text x="24" y="133" font-size="13" font-weight="400" text-anchor="start">TEPUNG TERIGU 1KG 2 x 13.500</text>
+<text x="356" y="133" font-size="13" font-weight="400" text-anchor="end">27.000</text>
+<text x="24" y="156" font-size="13" font-weight="400" text-anchor="start">BOX NASI 50PCS 3 x 45.000</text>
+<text x="356" y="156" font-size="13" font-weight="400" text-anchor="end">135.000</text>
+<text x="24" y="179" font-size="13" font-weight="400" text-anchor="start">SANTAN KARA 65ML 2 x 4.500</text>
+<text x="356" y="179" font-size="13" font-weight="400" text-anchor="end">9.000</text>
+<text x="190" y="202" font-size="13" font-weight="400" text-anchor="middle">--------------------------------</text>
+<text x="24" y="225" font-size="15" font-weight="700" text-anchor="start">TOTAL</text>
+<text x="356" y="225" font-size="15" font-weight="700" text-anchor="end">171.000</text>
+<text x="24" y="250" font-size="13" font-weight="400" text-anchor="start">TUNAI</text>
+<text x="356" y="250" font-size="13" font-weight="400" text-anchor="end">200.000</text>
+<text x="24" y="273" font-size="13" font-weight="400" text-anchor="start">KEMBALI</text>
+<text x="356" y="273" font-size="13" font-weight="400" text-anchor="end">29.000</text>
+<text x="190" y="302" font-size="13" font-weight="400" text-anchor="middle">TERIMA KASIH</text>
+</g></g></svg>

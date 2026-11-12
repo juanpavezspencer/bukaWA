@@ -1,1 +1,6 @@
 reports/
+
+# Real voice notes for the STT benchmark (personal data)
+datasets/voice-audio/
+# Real photos from pilot users (personal data); manifests may be committed once anonymized
+datasets/images/real/

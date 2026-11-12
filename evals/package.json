@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "generate": "tsx src/generate-text.ts",
+    "generate:voice": "tsx src/generate-voice.ts",
+    "generate:images": "tsx src/generate-images.ts",
     "evals": "tsx run.ts",
+    "stt-bench": "tsx stt-bench.ts",
     "test": "vitest run",
     "typecheck": "tsc -p ."
   },
@@ -13,5 +16,8 @@
     "@anthropic-ai/sdk": "1.8.0",
     "@bukuwa/ai": "workspace:*",
     "@bukuwa/idn": "workspace:*"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2"
   }
 }

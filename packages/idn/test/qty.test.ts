@@ -23,3 +23,18 @@ describe("parseQty / multiplyQty", () => {
     expect(parseQty(q)).toBeNull();
   });
 });
+
+// Voice transcripts spell quantities out.
+describe("parseQty spoken", () => {
+  it.each([
+    ["dua puluh lima", 25n],
+    ["lima belas", 15n],
+    ["seratus", 100n],
+  ])("%s -> %s", (input, num) => {
+    expect(parseQty(input)).toEqual({ num, den: 1n });
+  });
+
+  it("rejects zero", () => {
+    expect(parseQty("nol")).toBeNull();
+  });
+});

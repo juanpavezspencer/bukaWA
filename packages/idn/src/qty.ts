@@ -1,3 +1,5 @@
+import { parseSpokenNumber } from "./spoken.js";
+
 /** Quantity as an exact fraction so qty x price stays integer arithmetic. */
 export interface Qty {
   num: bigint;
@@ -23,7 +25,10 @@ export function parseQty(input: string): Qty | null {
     return q.num > 0n && q.den > 0n ? q : null;
   }
   m = /^(\d+)(?:[.,](\d{1,3}))?$/.exec(s);
-  if (!m) return null;
+  if (!m) {
+    const spoken = parseSpokenNumber(s); // "dua puluh lima" from a voice transcript
+    return spoken !== null && spoken > 0n ? { num: spoken, den: 1n } : null;
+  }
   const frac = m[2] ?? "";
   const q = { num: BigInt(m[1]! + frac), den: 10n ** BigInt(frac.length) };
   return q.num > 0n ? q : null;

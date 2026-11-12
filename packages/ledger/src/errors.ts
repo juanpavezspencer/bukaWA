@@ -12,7 +12,8 @@ export type LedgerErrorCode =
   | "CANNOT_REVERSE_REVERSAL"
   | "UNSUPPORTED_KIND"
   | "MISSING_PAYMENT_METHOD"
-  | "INVALID_CATEGORY";
+  | "INVALID_CATEGORY"
+  | "SPLIT_MISMATCH";
 
 export class LedgerError extends Error {
   constructor(

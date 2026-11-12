@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="460" height="291" viewBox="0 0 460 291">
+<rect width="100%" height="100%" fill="#e9e9e9"/>
+<g><rect x="4" y="4" width="452" height="283" fill="#ffffff" rx="6"/>
+<g font-family="Helvetica, Arial, sans-serif" fill="#111">
+<text x="24" y="36" font-size="18" font-weight="700" text-anchor="start">AGEN TELUR PAK HARUN</text>
+<text x="436" y="64" font-size="20" font-weight="700" text-anchor="end">INVOICE</text>
+<text x="24" y="94" font-size="13" font-weight="400" text-anchor="start">No: INV/654/XI/2026</text>
+<text x="24" y="117" font-size="13" font-weight="400" text-anchor="start">Tanggal: 10 Nov 2026 17:10 WIB</text>
+<text x="24" y="140" font-size="13" font-weight="400" text-anchor="start">Kepada: Catering Bu Rina</text>
+<text x="24" y="165" font-size="14" font-weight="400" text-anchor="start">Daging sapi 25 kg x 35.000</text>
+<text x="436" y="165" font-size="14" font-weight="400" text-anchor="end">875.000</text>
+<text x="24" y="191" font-size="14" font-weight="400" text-anchor="start">Gula pasir 5 kg x 18.000</text>
+<text x="436" y="191" font-size="14" font-weight="400" text-anchor="end">90.000</text>
+<text x="24" y="221" font-size="16" font-weight="700" text-anchor="start">Total</text>
+<text x="436" y="221" font-size="16" font-weight="700" text-anchor="end">Rp 965.000</text>
+<text x="24" y="247" font-size="14" font-weight="400" text-anchor="start">Status: LUNAS (transfer)</text>
+</g></g></svg>

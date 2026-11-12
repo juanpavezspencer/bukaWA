@@ -99,3 +99,87 @@ describe("buildJournalDraft", () => {
     expect(code(() => buildJournalDraft(BIZ, { ...base, kind: "sale", amountIdr: 0n, paymentMethod: "cash" }))).toBe("INVALID_AMOUNT");
   });
 });
+
+// Flow B: one shopping trip, several lines that belong to different categories.
+describe("buildJournalDraft with split categories", () => {
+  const expense = { ...base, kind: "expense" as const, amountIdr: 213_000n, paymentMethod: "cash" };
+
+  it("debits each category and credits the payment account once", () => {
+    const d = buildJournalDraft(BIZ, {
+      ...expense,
+      splits: [
+        { accountCode: "5100", amountIdr: 175_000n },
+        { accountCode: "6900", amountIdr: 38_000n },
+      ],
+    });
+    expect(d.lines).toEqual([
+      { accountCode: "5100", debit: 175_000n, memo: null },
+      { accountCode: "6900", debit: 38_000n, memo: null },
+      { accountCode: "1100", credit: 213_000n, memo: null },
+    ]);
+    expect(validateJournalDraft(d)).toBeUndefined();
+  });
+
+  it("merges splits that share an account", () => {
+    const d = buildJournalDraft(BIZ, {
+      ...expense,
+      splits: [
+        { accountCode: "5100", amountIdr: 175_000n },
+        { accountCode: "5100", amountIdr: 38_000n },
+      ],
+    });
+    expect(d.lines).toEqual([
+      { accountCode: "5100", debit: 213_000n, memo: null },
+      { accountCode: "1100", credit: 213_000n, memo: null },
+    ]);
+  });
+
+  it("credits each income account for a split sale", () => {
+    const d = buildJournalDraft(BIZ, {
+      ...base,
+      kind: "sale",
+      amountIdr: 100_000n,
+      paymentMethod: "qris",
+      splits: [
+        { accountCode: "4100", amountIdr: 90_000n },
+        { accountCode: "4200", amountIdr: 10_000n },
+      ],
+    });
+    expect(d.lines[0]).toEqual({ accountCode: "1110", debit: 100_000n, memo: null });
+    expect(d.lines.slice(1).map((l) => l.accountCode)).toEqual(["4100", "4200"]);
+  });
+
+  it("rejects splits that don't add up to the amount", () => {
+    expect(code(() => buildJournalDraft(BIZ, { ...expense, splits: [{ accountCode: "5100", amountIdr: 175_000n }] }))).toBe(
+      "SPLIT_MISMATCH",
+    );
+  });
+
+  it("validates every split account against the kind", () => {
+    expect(
+      code(() =>
+        buildJournalDraft(BIZ, {
+          ...expense,
+          splits: [
+            { accountCode: "5100", amountIdr: 175_000n },
+            { accountCode: "4100", amountIdr: 38_000n },
+          ],
+        }),
+      ),
+    ).toBe("INVALID_CATEGORY");
+  });
+
+  it("rejects non-positive split amounts", () => {
+    expect(
+      code(() =>
+        buildJournalDraft(BIZ, {
+          ...expense,
+          splits: [
+            { accountCode: "5100", amountIdr: 213_000n },
+            { accountCode: "6900", amountIdr: 0n },
+          ],
+        }),
+      ),
+    ).toBe("INVALID_AMOUNT");
+  });
+});

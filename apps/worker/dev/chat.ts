@@ -11,9 +11,10 @@ import { eq } from "drizzle-orm";
 import { businesses, hashPii, onboardingSessions, piiKeysFromBase64, toE164, users, waInbound, withBusiness, type Db } from "@bukuwa/db";
 import { createTestDb } from "@bukuwa/db/testing";
 import { trialBalance } from "@bukuwa/ledger";
-import type { OutboundMessage, WaSender } from "@bukuwa/wa";
+import type { MediaFetcher, OutboundMessage, WaSender } from "@bukuwa/wa";
 import { aiConfigFromEnv, anthropicModel } from "@bukuwa/ai";
 import { processInbound, type InboundDeps } from "../src/inbound.js";
+import { memoryMediaStore } from "../src/media/store.js";
 import { offlineModel } from "./offline-model.js";
 
 const useClaude = Boolean(process.env.ANTHROPIC_API_KEY);
@@ -30,6 +31,16 @@ const sender: WaSender = {
   },
 };
 
+/** Uploaded files stand in for WhatsApp's media download. */
+const uploads = new Map<string, { bytes: Uint8Array; mimeType: string }>();
+const fetcher: MediaFetcher = {
+  async fetch(id) {
+    const f = uploads.get(id);
+    if (!f) throw new Error(`no upload ${id}`);
+    return f;
+  },
+};
+
 let db: Db;
 let deps: InboundDeps;
 let seq = 0;
@@ -42,6 +53,8 @@ async function reset() {
     sender,
     keys,
     ai: { model: useClaude ? anthropicModel() : offlineModel, config: aiConfigFromEnv() },
+    // Photos need the real vision model; offline, media gets the "not yet" reply.
+    media: useClaude ? { fetcher, store: memoryMediaStore() } : undefined,
     config: { privacyPolicyUrl: "https://bukuwa.id/privasi", consentVersion: "dev", trialDays: 14, timezone: "Asia/Jakarta" },
     log: (e) => console.log(JSON.stringify(e)),
   };
@@ -72,13 +85,31 @@ async function stateFor(from: string) {
 const app = new Hono();
 app.get("/", (c) => c.html(PAGE));
 app.post("/send", async (c) => {
-  const { from, text, replyId, title } = await c.req.json<{ from: string; text?: string; replyId?: string; title?: string }>();
+  const { from, text, replyId, title, upload } = await c.req.json<{
+    from: string;
+    text?: string;
+    replyId?: string;
+    title?: string;
+    upload?: { base64: string; mimeType: string; caption?: string };
+  }>();
   const id = `wamid.dev.in.${++seq}`;
-  const payload = replyId
-    ? { id, from, type: "interactive", interactive: { type: "button_reply", button_reply: { id: replyId, title: title ?? replyId } } }
-    : { id, from, type: "text", text: { body: text ?? "" } };
+  let payload: Record<string, unknown>;
+  if (upload) {
+    const mediaId = `media.dev.${seq}`;
+    const mimeType = upload.mimeType.split(";")[0]!;
+    uploads.set(mediaId, { bytes: new Uint8Array(Buffer.from(upload.base64, "base64")), mimeType });
+    payload = mimeType.startsWith("audio/")
+      ? { id, from, type: "audio", audio: { id: mediaId, mime_type: mimeType, voice: true } }
+      : mimeType === "application/pdf"
+        ? { id, from, type: "document", document: { id: mediaId, mime_type: mimeType, caption: upload.caption } }
+        : { id, from, type: "image", image: { id: mediaId, mime_type: mimeType, caption: upload.caption } };
+  } else if (replyId) {
+    payload = { id, from, type: "interactive", interactive: { type: "button_reply", button_reply: { id: replyId, title: title ?? replyId } } };
+  } else {
+    payload = { id, from, type: "text", text: { body: text ?? "" } };
+  }
   const before = outbox.length;
-  await db.insert(waInbound).values({ waMessageId: id, fromPhone: from, type: payload.type, payload });
+  await db.insert(waInbound).values({ waMessageId: id, fromPhone: from, type: payload.type as string, payload });
   await processInbound(deps, id);
   const to = toE164(from);
   return c.json({ replies: outbox.slice(before).filter((o) => o.to === to).map((o) => o.msg), state: json(await stateFor(from)) });
@@ -112,6 +143,8 @@ const PAGE = /* html */ `<!doctype html>
   .hint { font-size: 12px; color: #667781; margin-top: 4px; }
   form { display: flex; gap: 8px; padding: 10px; background: #f0f2f5; }
   form input { flex: 1; padding: 10px 12px; border: 0; border-radius: 20px; font: inherit; }
+  .clip { display: flex; align-items: center; font-size: 20px; cursor: pointer; padding: 0 4px; }
+  .msg img { max-width: 220px; display: block; border-radius: 6px; margin-bottom: 4px; }
   form button { background: #00a884; color: #fff; border: 0; border-radius: 20px; padding: 0 16px; cursor: pointer; font: inherit; }
   aside { flex: 1 1 40%; padding: 14px; overflow-y: auto; font-size: 13px; }
   aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #667781; margin: 0 0 8px; }
@@ -119,11 +152,11 @@ const PAGE = /* html */ `<!doctype html>
 </style></head>
 <body>
 <section class="chat">
-  <header><strong>BukuWA (dev${useClaude ? "" : ", offline model"})</strong>
+  <header><strong title="${useClaude ? "Using Claude" : "Offline keyword stand-in. Photos need ANTHROPIC_API_KEY."}">BukuWA (dev${useClaude ? "" : ", offline model"})</strong>
     <label>Nomor <input id="from" value="6281234567890"></label>
     <button id="reset" title="Wipe the in-memory database">Reset DB</button></header>
   <div id="log"></div>
-  <form id="f"><input id="t" placeholder="Ketik pesan" autocomplete="off" autofocus><button>Kirim</button></form>
+  <form id="f"><label class="clip" title="Kirim foto, PDF atau voice note">📎<input id="file" type="file" accept="image/*,application/pdf,audio/*" hidden></label><input id="t" placeholder="Ketik pesan (jadi caption kalau kirim file)" autocomplete="off" autofocus><button>Kirim</button></form>
 </section>
 <aside><h2>Database state for this number</h2><pre id="state">(belum ada)</pre></aside>
 <script>
@@ -144,6 +177,17 @@ async function send(body) {
   const r = await fetch('/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ from: from.value, ...body }) });
   const j = await r.json(); j.replies.forEach(render); stateEl.textContent = JSON.stringify(j.state, null, 2);
 }
+const fileEl = document.getElementById('file');
+fileEl.onchange = async () => {
+  const f = fileEl.files[0]; if (!f) return;
+  const t = document.getElementById('t'); const caption = t.value.trim(); t.value = '';
+  const base64 = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.readAsDataURL(f); });
+  const d = bubble('in', (f.type.startsWith('audio/') ? '🎤 ' : '📎 ') + f.name + (caption ? '\n' + caption : ''));
+  if (f.type.startsWith('image/')) { const img = document.createElement('img'); img.src = URL.createObjectURL(f); d.prepend(img); }
+  fileEl.value = '';
+  const r = await fetch('/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ from: from.value, upload: { base64, mimeType: f.type || 'application/octet-stream', caption } }) });
+  const j = await r.json(); j.replies.forEach(render); stateEl.textContent = JSON.stringify(j.state, null, 2);
+};
 document.getElementById('f').onsubmit = (e) => { e.preventDefault(); const t = document.getElementById('t'); if (!t.value.trim()) return; send({ text: t.value }); t.value = ''; };
 document.getElementById('reset').onclick = async () => { await fetch('/reset', { method: 'POST' }); log.innerHTML = ''; stateEl.textContent = '(belum ada)'; };
 from.onchange = async () => { log.innerHTML = ''; stateEl.textContent = JSON.stringify(await (await fetch('/state?from=' + encodeURIComponent(from.value))).json(), null, 2); };

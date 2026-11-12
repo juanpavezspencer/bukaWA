@@ -14,6 +14,10 @@ const EnvSchema = z.object({
   CONSENT_VERSION: z.string().min(1),
   TRIAL_DAYS: z.coerce.number().int().positive().default(14),
   DEFAULT_TIMEZONE: z.string().default("Asia/Jakarta"),
+  /** Where original photos and voice notes are kept (local disk until the Cloud Storage adapter lands). */
+  MEDIA_DIR: z.string().min(1),
+  /** WhatsApp caps audio and documents at 16 MB. */
+  MEDIA_MAX_BYTES: z.coerce.number().int().positive().default(16 * 1024 * 1024),
 });
 
 export type WorkerConfig = z.infer<typeof EnvSchema>;

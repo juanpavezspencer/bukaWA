@@ -28,6 +28,11 @@ export interface PostableEntry {
   paymentMethod: string | null;
   /** Category account code; defaults per kind if omitted. */
   accountCode?: string;
+  /**
+   * Sale/expense only: split the category side across accounts (one receipt,
+   * items in different categories). Must add up to amountIdr exactly.
+   */
+  splits?: Array<{ accountCode: string; amountIdr: bigint }>;
   counterparty?: string | null;
   idempotencyKey?: string;
   createdBy?: string;
@@ -88,6 +93,27 @@ export function buildJournalDraft(businessId: string, e: PostableEntry): Journal
   }
   const pay = paymentAccountCode(e.paymentMethod);
   if (!pay) throw new LedgerError("MISSING_PAYMENT_METHOD", "payment method is unknown");
+
+  if (e.splits?.length && (e.kind === "sale" || e.kind === "expense")) {
+    const byAccount = new Map<string, bigint>();
+    let sum = 0n;
+    for (const sp of e.splits) {
+      if (typeof sp.amountIdr !== "bigint" || sp.amountIdr <= 0n) {
+        throw new LedgerError("INVALID_AMOUNT", "split amounts must be positive integer rupiah");
+      }
+      const acct = category(e.kind, sp.accountCode);
+      byAccount.set(acct, (byAccount.get(acct) ?? 0n) + sp.amountIdr);
+      sum += sp.amountIdr;
+    }
+    if (sum !== e.amountIdr) {
+      throw new LedgerError("SPLIT_MISMATCH", `splits add up to ${sum}, entry amount is ${e.amountIdr}`);
+    }
+    const categoryLines = [...byAccount].map(([accountCode, amt]) =>
+      e.kind === "sale" ? { accountCode, credit: amt, memo } : { accountCode, debit: amt, memo },
+    );
+    const payLine = e.kind === "sale" ? { accountCode: pay, debit: e.amountIdr, memo } : { accountCode: pay, credit: e.amountIdr, memo };
+    return { ...header, lines: e.kind === "sale" ? [payLine, ...categoryLines] : [...categoryLines, payLine] };
+  }
 
   switch (e.kind) {
     case "sale":
