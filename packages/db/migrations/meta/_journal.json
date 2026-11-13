@@ -71,6 +71,20 @@
       "when": 1794583732665,
       "tag": "0009_tax_and_reports_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794585682494,
+      "tag": "0010_dashboard_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794585705921,
+      "tag": "0011_dashboard_auth_rls",
+      "breakpoints": true
     }
   ]
 }

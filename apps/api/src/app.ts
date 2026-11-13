@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Db, MediaStore } from "@bukuwa/db";
 import { openSignedFile, type LinkKind } from "@bukuwa/reports";
+import { adminRoutes, type AdminConfig } from "./admin.js";
 import type { ApiConfig } from "./config.js";
+import { dashboardRoutes, type DashboardConfig } from "./dashboard.js";
 import { markEnqueued, recordInbound } from "./inbox.js";
 import type { JobQueue } from "./queue.js";
 import { parseWebhook } from "./whatsapp/payload.js";
@@ -14,18 +16,25 @@ export interface AppDeps {
   config: Pick<ApiConfig, "WA_APP_SECRET" | "WA_VERIFY_TOKEN" | "WA_WEBHOOK_MAX_BYTES">;
   /** Signed report and evidence downloads (F10). */
   files?: { key: Buffer; store?: MediaStore };
+  /** Owner dashboard API under /api (milestone 7). */
+  dashboard?: DashboardConfig;
+  /** Staff console API under /api/admin. */
+  admin?: AdminConfig;
   now?: () => Date;
   log?: (event: Record<string, unknown>) => void;
 }
 
 const defaultLog = (event: Record<string, unknown>) => console.log(JSON.stringify(event));
 
-export function createApp({ db, queue, config, files, now = () => new Date(), log = defaultLog }: AppDeps): Hono {
+export function createApp({ db, queue, config, files, dashboard, admin, now = () => new Date(), log = defaultLog }: AppDeps): Hono {
   const app = new Hono();
 
   app.get("/healthz", (c) => c.text("ok"));
 
   if (files) app.route("/", fileRoutes({ db, ...files, now, log }));
+  // Admin first: the dashboard's session check would otherwise claim /api/admin/*.
+  if (admin) app.route("/api/admin", adminRoutes({ db, cfg: admin, now }));
+  if (dashboard) app.route("/api", dashboardRoutes({ db, cfg: dashboard, now, log }));
 
   // Meta subscription handshake.
   app.get("/webhooks/whatsapp", (c) => {

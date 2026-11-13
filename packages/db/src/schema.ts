@@ -427,6 +427,97 @@ export const taxNoticeSchedules = pgTable(
 );
 
 /**
+ * One-time magic links for the dashboard (spec: magic-link login sent via
+ * WhatsApp). Only the SHA-256 of the token is stored; the token itself is in
+ * the WhatsApp message. Found before the tenant is known through the
+ * login_lookup policy, like phone lookup.
+ */
+export const loginTokens = pgTable(
+  "login_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("login_tokens_business_idx").on(t.businessId)],
+);
+
+/** Dashboard sessions (spec 8.2: expire after 7 days). Cookie holds the token; only its hash is stored. */
+export const dashboardSessions = pgTable(
+  "dashboard_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    sessionHash: text("session_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("dashboard_sessions_business_idx").on(t.businessId)],
+);
+
+/**
+ * Staff access to the admin console. Not tenant-scoped: an admin is a phone
+ * number on the ADMIN_PHONES allowlist, not a business user. Hashes only.
+ */
+export const adminLoginTokens = pgTable("admin_login_tokens", {
+  tokenHash: text("token_hash").primaryKey(),
+  phoneHash: text("phone_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: createdAt(),
+});
+
+export const adminSessions = pgTable("admin_sessions", {
+  sessionHash: text("session_hash").primaryKey(),
+  phoneHash: text("phone_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: createdAt(),
+});
+
+export const reviewVerdict = pgEnum("review_verdict", ["correct", "wrong", "unclear"]);
+
+/**
+ * Manual review queue outcomes (admin console). Insert-only: a capture's
+ * latest review is its current state. Feeds new eval cases (spec 7.5).
+ */
+export const captureReviews = pgTable(
+  "capture_reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    captureId: uuid("capture_id").notNull(),
+    verdict: reviewVerdict("verdict").notNull(),
+    /** Fields the model got wrong, e.g. ["amount", "counterparty"]. */
+    wrongFields: jsonb("wrong_fields").notNull().default([]),
+    note: text("note"),
+    /** Admin phone hash. */
+    reviewer: text("reviewer").notNull(),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("capture_reviews_capture_idx").on(t.captureId, t.reviewedAt),
+    foreignKey({ name: "capture_reviews_capture_fk", columns: [t.captureId], foreignColumns: [captures.id] }),
+  ],
+);
+
+/**
  * Raw inbound WhatsApp messages, written by the webhook before the sender is
  * resolved to a business. Not tenant-scoped (sender may not be onboarded yet),
  * so it has no RLS; only the webhook/worker roles can touch it.
@@ -470,4 +561,7 @@ export const TENANT_TABLES = [
   "summary_schedules",
   "reports",
   "tax_notice_schedules",
+  "login_tokens",
+  "dashboard_sessions",
+  "capture_reviews",
 ] as const;

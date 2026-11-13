@@ -64,6 +64,7 @@ import {
 } from "./capture/flow.js";
 import { onboardingStep, type OnboardingState } from "./onboarding.js";
 import { handleSummaryRequest } from "./summary.js";
+import { adminLink, dashboardLink, isAdminRequest, isDashboardRequest, type DashboardDeps } from "./dashboard.js";
 import { ensureTaxNoticeSchedule, handleTaxRequest, parseReportReply, reportReply, type TaxDeps } from "./tax.js";
 
 export interface InboundDeps {
@@ -75,6 +76,8 @@ export interface InboundDeps {
   media?: { fetcher: MediaFetcher; store: MediaStore };
   /** Tax estimates, reports and the month-end notice (F10); without it they get a "not yet" reply. */
   tax?: TaxDeps;
+  /** Magic-link login to the web dashboard and admin console. */
+  dashboard?: DashboardDeps;
   config: { privacyPolicyUrl: string; consentVersion: string; trialDays: number; timezone: string };
   now?: () => Date;
   log?: (event: Record<string, unknown>) => void;
@@ -138,6 +141,8 @@ type Plan =
   | { kind: "answer_counterparty"; captureId: string; name: string }
   | { kind: "summary"; request: SummaryRequest }
   | { kind: "tax"; request: TaxRequest }
+  | { kind: "login" }
+  | { kind: "admin_login" }
   | { kind: "report"; month: string; format: ReportFormat }
   | { kind: "correction"; proposal: CorrectionProposal; summary: JournalSummary; modelVersion: string; text: string }
   | {
@@ -300,6 +305,8 @@ async function planMedia(deps: InboundDeps, s: Sender, media: InboundMedia, waMe
 type Log = (event: Record<string, unknown>) => void;
 
 async function plan(deps: InboundDeps, s: Sender, waMessageId: string, today: string, log: Log): Promise<Plan> {
+  // Staff may not own a business, so this comes before onboarding.
+  if (deps.dashboard?.adminPhoneHashes.has(s.phoneHash) && isAdminRequest(s.input.text ?? "")) return { kind: "admin_login" };
   if (!s.user) return { kind: "onboarding" };
   if (parseCaptureReply(s.input.replyId)) return { kind: "capture_action" };
   const reportTap = parseReportReply(s.input.replyId);
@@ -337,6 +344,10 @@ async function plan(deps: InboundDeps, s: Sender, waMessageId: string, today: st
   // "ringkasan harian jam 9 malam", "stop ringkasan", "rekap": settings, parsed by code.
   const summary = parseSummaryRequest(text);
   if (summary) return { kind: "summary", request: summary };
+
+  if (isDashboardRequest(text)) {
+    return deps.dashboard ? { kind: "login" } : { kind: "reply", replies: [{ kind: "text", body: "Dashboard web segera hadir ya. 🙏" }] };
+  }
 
   // "pajak bulan lalu berapa?", "laporan oktober excel", "stop pengingat pajak".
   const taxRequest = parseTaxRequest(text, today);
@@ -416,6 +427,11 @@ export async function processInbound(deps: InboundDeps, waMessageId: string): Pr
 
     if (p.kind === "onboarding") {
       ({ replies, businessId, event } = await runOnboarding(tx, deps, sender, now));
+    } else if (p.kind === "admin_login") {
+      // Not logged to any business's messages: staff aren't tenants.
+      replies = await adminLink(tx, deps.dashboard!, { phoneHash: sender.phoneHash, now: now() });
+      businessId = undefined;
+      event = "inbound.admin_login";
     } else {
       await setBusinessScope(tx, businessId!);
       const ctx = { businessId: businessId!, userId: sender.user!.userId, today };
@@ -436,6 +452,9 @@ export async function processInbound(deps: InboundDeps, waMessageId: string): Pr
             { businessId: ctx.businessId, businessName: sender.businessName ?? "usahamu", today, timezone: sender.timezone, now: now() },
             p.request,
           );
+          break;
+        case "login":
+          replies = await dashboardLink(tx, deps.dashboard!, { businessId: ctx.businessId, userId: ctx.userId, now: now() });
           break;
         case "tax":
           replies = await handleTaxRequest(tx, { ...ctx, now: now(), timezone: sender.timezone }, deps.tax!, p.request);

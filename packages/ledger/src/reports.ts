@@ -317,6 +317,39 @@ export async function entriesInRange(tx: Tx, businessId: string, range: DateRang
   return found;
 }
 
+export interface CashFlow extends DateRange {
+  inIdr: bigint;
+  outIdr: bigint;
+  netIdr: bigint;
+}
+
+/**
+ * Money in and out of Kas, Bank and E-wallet in a period. Moves between
+ * those accounts (setor tunai) are not flows; cancelled entries and their
+ * reversals are left out so they don't inflate both sides.
+ */
+export async function cashFlow(tx: Tx, businessId: string, range: DateRange): Promise<CashFlow> {
+  await assertScope(tx, businessId);
+  if (range.from > range.to) throw new LedgerError("INVALID_DATE", `range starts after it ends: ${range.from} > ${range.to}`);
+  const cash = sql.join(CASH_ACCOUNT_CODES.map((c) => sql`${c}`), sql`, `);
+  const r = await tx.execute(sql`
+    select coalesce(sum(l.debit), 0)::text as money_in, coalesce(sum(l.credit), 0)::text as money_out
+    from journal_lines l
+    join journals j on j.id = l.journal_id
+    join accounts a on a.id = l.account_id
+    where l.business_id = ${businessId} and a.code in (${cash})
+      and j.date between ${range.from} and ${range.to}
+      and j.reverses_journal_id is null
+      and not exists (select 1 from journals r where r.reverses_journal_id = j.id)
+      and exists (
+        select 1 from journal_lines o join accounts oa on oa.id = o.account_id
+        where o.journal_id = j.id and oa.code not in (${cash}))`);
+  const [x] = rows<{ money_in: string; money_out: string }>(r);
+  const inIdr = BigInt(x?.money_in ?? "0");
+  const outIdr = BigInt(x?.money_out ?? "0");
+  return { ...range, inIdr, outIdr, netIdr: inIdr - outIdr };
+}
+
 /** One entry by id, or undefined if it isn't this business's (RLS) or doesn't exist. */
 export async function getJournalSummary(tx: Tx, businessId: string, journalId: string): Promise<JournalSummary | undefined> {
   await assertScope(tx, businessId);
