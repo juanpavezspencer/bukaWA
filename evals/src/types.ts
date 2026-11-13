@@ -51,9 +51,13 @@ export interface QuestionCase {
   today: string;
   expected: {
     intent: "question" | "correction";
-    /** answer: must quote every must_include amount; unsupported: must quote no amounts; correction: must propose this. */
-    kind: "answer" | "unsupported" | "correction";
+    /**
+     * answer: must quote every must_include amount; unsupported: must quote no amounts; correction: must propose this;
+     * reminder: must draft a reminder for reminder_contact that quotes must_include.
+     */
+    kind: "answer" | "unsupported" | "correction" | "reminder";
     must_include?: string[];
+    reminder_contact?: string;
     correction?: { entry_key: string; action: "change" | "cancel"; amount_idr?: string; payment_code?: string };
   };
   /** The tool call(s) an ideal agent makes; an offline test checks they return the expected amounts. */

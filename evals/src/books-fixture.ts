@@ -11,13 +11,16 @@ const START = "2026-09-01";
 
 export interface FixtureEntry {
   key: string;
-  kind: Extract<EntryKind, "sale" | "expense" | "owner_capital" | "owner_drawing">;
+  kind: Extract<EntryKind, "sale" | "expense" | "owner_capital" | "owner_drawing" | "receivable" | "payable" | "settlement">;
   amountIdr: number;
   date: string;
   description: string;
-  /** Category for sales and expenses. */
+  /** Category for sales and expenses (and credit sales and purchases). */
   accountCode?: string;
-  paymentMethod: string;
+  /** Settlement only. */
+  settles?: "receivable" | "payable";
+  /** null for debts on credit. */
+  paymentMethod: string | null;
   counterparty?: string;
   /** Posted, then cancelled with a reversal. */
   cancelled?: boolean;
@@ -89,6 +92,18 @@ export function buildFixture(): FixtureEntry[] {
     if (dow === 3 && rand() < 0.5) add({ kind: "expense", amountIdr: between(50_000, 200_000, 10_000), date, description: "Iklan instagram", accountCode: "6500", paymentMethod: "bank:BCA" });
     if (dow === 5) add({ kind: "owner_drawing", amountIdr: between(200_000, 600_000, 50_000), date, description: "Ambil buat keperluan rumah", paymentMethod: "cash" });
   }
+
+  // Receivables and payables (F8), kept off the customers other questions ask
+  // about and out of yesterday/today/this week, so those answers stay simple.
+  add({ kind: "receivable", amountIdr: 600_000, date: "2026-10-14", description: "Nasi box pengajian", accountCode: "4100", paymentMethod: null, counterparty: "Bu Rahma" });
+  add({ kind: "settlement", settles: "receivable", amountIdr: 250_000, date: "2026-10-21", description: "Cicilan Bu Rahma", paymentMethod: "cash", counterparty: "Bu Rahma" });
+  add({ kind: "receivable", amountIdr: 450_000, date: "2026-11-03", description: "Tumpeng ulang tahun", accountCode: "4100", paymentMethod: null, counterparty: "Bu Rahma" });
+  add({ kind: "receivable", amountIdr: 1_200_000, date: "2026-10-28", description: "Snack rapat", accountCode: "4100", paymentMethod: null, counterparty: "Kantor Kelurahan" });
+  add({ kind: "settlement", settles: "receivable", amountIdr: 1_200_000, date: "2026-11-04", description: "Pelunasan kelurahan", paymentMethod: "bank:BCA", counterparty: "Kantor Kelurahan" });
+  add({ kind: "receivable", amountIdr: 375_000, date: "2026-11-05", description: "Nasi box arisan", accountCode: "4100", paymentMethod: null, counterparty: "Pak Hendra" });
+  add({ kind: "payable", amountIdr: 1_500_000, date: "2026-10-20", description: "Beras 5 karung", accountCode: "5100", paymentMethod: null, counterparty: "Toko Sumber Rejeki" });
+  add({ kind: "settlement", settles: "payable", amountIdr: 500_000, date: "2026-10-27", description: "Cicil utang beras", paymentMethod: "bank:BCA", counterparty: "Toko Sumber Rejeki" });
+  add({ kind: "payable", amountIdr: 320_000, date: "2026-11-02", description: "Gas elpiji", accountCode: "5100", paymentMethod: null, counterparty: "Agen Gas Pak Tono" });
 
   // A mistake the owner already cancelled this month: must not count anywhere.
   add({ kind: "expense", amountIdr: 4_500_000, date: "2026-11-06", description: "Belanja ayam (salah input)", accountCode: "5100", paymentMethod: "cash", cancelled: true });

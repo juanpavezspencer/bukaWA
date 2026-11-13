@@ -132,9 +132,9 @@ async function runQuestion(books: FixtureBooks, c: QuestionCase): Promise<CaseRe
     } else {
       const r = await askBooks(chat, cfg, { db: books.db, businessId: books.businessId, businessName: FIXTURE_BUSINESS, today: c.today, text: c.text });
       out =
-        r.kind === "answer"
-          ? { kind: "answer", text: r.text }
-          : { kind: "proposal", journalId: r.proposal.journalId, action: r.proposal.action, amountIdr: r.proposal.amountIdr, paymentCode: r.proposal.paymentCode };
+        r.kind === "answer" ? { kind: "answer", text: r.text }
+        : r.kind === "reminder" ? { kind: "reminder", contactName: r.contactName, text: r.text }
+        : { kind: "proposal", journalId: r.proposal.journalId, action: r.proposal.action, amountIdr: r.proposal.amountIdr, paymentCode: r.proposal.paymentCode };
     }
   } catch (err) {
     if (!isModelError(err)) throw err;

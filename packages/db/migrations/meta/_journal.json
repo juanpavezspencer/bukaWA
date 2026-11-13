@@ -43,6 +43,20 @@
       "when": 1794500461967,
       "tag": "0005_category_rules_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794505910040,
+      "tag": "0006_summary_schedules",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794505910383,
+      "tag": "0007_summary_schedules_rls",
+      "breakpoints": true
     }
   ]
 }

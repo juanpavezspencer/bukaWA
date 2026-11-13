@@ -2,7 +2,48 @@
 export type OutboundMessage =
   | { kind: "text"; body: string }
   | { kind: "buttons"; body: string; buttons: Array<{ id: string; title: string }> }
-  | { kind: "list"; body: string; buttonText: string; rows: Array<{ id: string; title: string; description?: string }> };
+  | { kind: "list"; body: string; buttonText: string; rows: Array<{ id: string; title: string; description?: string }> }
+  /** A pre-approved template: the only kind allowed outside the 24-hour window (scheduled summaries). */
+  | { kind: "template"; name: string; language: string; params: string[] };
+
+export interface TemplateDef {
+  name: string;
+  language: string;
+  /** The body exactly as submitted to Meta for approval; {{n}} are the params. */
+  body: string;
+}
+
+/**
+ * F9 daily/weekly summary. Submit this body to Meta (category: utility) under
+ * this name before turning summaries on in production.
+ */
+export const SUMMARY_TEMPLATE: TemplateDef = {
+  name: "ringkasan_bisnis",
+  language: "id",
+  body: [
+    "Ringkasan {{1}} untuk {{2}} 📊",
+    "",
+    "💰 Pemasukan: {{3}}",
+    "🧾 Pengeluaran: {{4}}",
+    "📈 Laba/rugi: {{5}}",
+    "🏦 Total uang (kas, bank, e-wallet): {{6}}",
+    "🔥 Paling laku: {{7}}",
+    "⏳ Belum dibayar pelanggan: {{8}}",
+    "",
+    "Balas pesan ini kalau mau tanya detailnya, misalnya \"pengeluaran kemarin apa aja?\"",
+  ].join("\n"),
+};
+
+export const TEMPLATES: Record<string, TemplateDef> = { [SUMMARY_TEMPLATE.name]: SUMMARY_TEMPLATE };
+
+const paramCount = (t: TemplateDef) => new Set(t.body.match(/\{\{\d+\}\}/g) ?? []).size;
+
+/** The text the owner sees, for the messages log and the dev chat. */
+export function renderTemplate(msg: Extract<OutboundMessage, { kind: "template" }>): string {
+  const t = TEMPLATES[msg.name];
+  if (!t) throw new Error(`unknown template ${msg.name}`);
+  return t.body.replace(/\{\{(\d+)\}\}/g, (_, n: string) => msg.params[Number(n) - 1] ?? "");
+}
 
 const LIMITS = { body: 1024, buttons: 3, buttonTitle: 20, rows: 10, rowTitle: 24, listButton: 20 };
 
@@ -44,12 +85,38 @@ export function toCloudApiPayload(to: string, msg: OutboundMessage): Record<stri
           action: { button: msg.buttonText, sections: [{ title: "Pilihan", rows: msg.rows }] },
         },
       };
+    case "template": {
+      const t = TEMPLATES[msg.name];
+      check(t !== undefined, `unknown template ${msg.name}`);
+      check(msg.params.length === paramCount(t!), `${msg.name} takes ${paramCount(t!)} parameters`);
+      for (const p of msg.params) {
+        check(p.trim().length > 0, "template parameter is empty");
+        // Cloud API rejects these in body parameters.
+        check(!/[\n\t]| {5,}/.test(p), "template parameter has a newline, tab or 5+ spaces");
+        check(p.length <= 1024, "template parameter too long");
+      }
+      return {
+        ...base,
+        type: "template",
+        template: {
+          name: msg.name,
+          language: { code: msg.language },
+          components: [{ type: "body", parameters: msg.params.map((text) => ({ type: "text", text })) }],
+        },
+      };
+    }
   }
+}
+
+/** The main text the owner reads: the body, or a template's rendered body. */
+export function messageText(msg: OutboundMessage): string {
+  return msg.kind === "template" ? renderTemplate(msg) : msg.body;
 }
 
 /** Plain-text rendering for the messages log. */
 export function messageLogBody(msg: OutboundMessage): string {
   if (msg.kind === "text") return msg.body;
+  if (msg.kind === "template") return `[template ${msg.name}]\n${renderTemplate(msg)}`;
   const opts = msg.kind === "buttons" ? msg.buttons : msg.rows;
   return `${msg.body}\n[${opts.map((o) => o.title).join(" | ")}]`;
 }

@@ -14,7 +14,9 @@ export type LedgerErrorCode =
   | "MISSING_PAYMENT_METHOD"
   | "INVALID_CATEGORY"
   | "SPLIT_MISMATCH"
-  | "NOT_CORRECTABLE";
+  | "NOT_CORRECTABLE"
+  | "MISSING_CONTACT"
+  | "MISSING_SETTLEMENT_SIDE";
 
 export class LedgerError extends Error {
   constructor(

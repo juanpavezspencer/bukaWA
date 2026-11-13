@@ -5,3 +5,5 @@ export * from "./ledger.js";
 export * from "./posting.js";
 export * from "./reports.js";
 export * from "./correction.js";
+export * from "./contacts.js";
+export * from "./open-items.js";

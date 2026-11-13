@@ -1,15 +1,19 @@
 import { z } from "zod/v4";
 import { setBusinessScope, withAppRole, type Db, type Tx } from "@bukuwa/db";
 import { agentTool, CATEGORY_NAMES, type AgentTool } from "@bukuwa/ai";
-import { formatRupiah, parseIdDate, parsePaymentMethod, parseRupiah, PERIOD_PRESETS, resolvePeriod, type PeriodPreset } from "@bukuwa/idn";
+import { formatRupiah, similarContact, parseIdDate, parsePaymentMethod, parseRupiah, PERIOD_PRESETS, resolvePeriod, type PeriodPreset } from "@bukuwa/idn";
+import { contacts } from "@bukuwa/db";
 import {
   cashPosition,
   correctedDraft,
+  findContact,
   findTransactions,
+  openBalances,
   getJournalSummary,
   LedgerError,
   paymentAccountCode,
   profitAndLoss,
+  type ContactBalance,
   type JournalSummary,
   type ProfitAndLoss,
 } from "@bukuwa/ledger";
@@ -28,6 +32,8 @@ export interface ToolContext {
   today: string;
   /** The owner's message: corrected amounts must be copied from it. */
   message: string;
+  /** Signs reminder drafts. */
+  businessName?: string;
 }
 
 /** A correction the owner still has to confirm with a button. */
@@ -61,6 +67,9 @@ const KIND_LABEL: Record<string, string> = {
   expense: "pengeluaran",
   owner_capital: "tambah modal",
   owner_drawing: "prive (ambil pribadi)",
+  receivable: "piutang (jual belum dibayar)",
+  payable: "utang (beli belum dibayar)",
+  settlement: "pelunasan utang/piutang",
   other: "lainnya",
 };
 
@@ -113,7 +122,36 @@ function txView(t: JournalSummary) {
   };
 }
 
-export function buildTools(ctx: ToolContext, onProposal: (p: CorrectionProposal, summary: JournalSummary) => void): AgentTool[] {
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+const short = (iso: string) => `${Number(iso.slice(8, 10))} ${MONTHS[Number(iso.slice(5, 7)) - 1]}`;
+
+/** The reminder an owner forwards to a customer. Built by code: the amounts come from the ledger. */
+export function reminderText(businessName: string, b: ContactBalance): string {
+  const items = b.openItems.slice(0, 5).map((i) => `• ${short(i.date)}, ${i.description}: ${rp(i.openIdr)}${i.openIdr < i.amountIdr ? " (sisa)" : ""}`);
+  const more = b.openItems.length > 5 ? [`• dan ${b.openItems.length - 5} lainnya`] : [];
+  return [
+    `Halo ${b.name}, semoga sehat selalu 🙏`,
+    `Mau mengingatkan, masih ada tagihan dari ${businessName} sebesar *${rp(b.balanceIdr)}*:`,
+    ...items,
+    ...more,
+    "Kalau sudah transfer, kabari ya. Terima kasih banyak!",
+  ].join("\n");
+}
+
+/** Exact name match first; otherwise a single loose match ("sari" ~ "Bu Sari"). */
+async function lookupContact(tx: Tx, businessId: string, name: string): Promise<{ id: string; name: string } | undefined> {
+  const exact = await findContact(tx, businessId, name);
+  if (exact) return exact;
+  const all = await tx.select({ id: contacts.id, name: contacts.name }).from(contacts);
+  const hits = all.filter((c) => similarContact(c.name, name));
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
+export function buildTools(
+  ctx: ToolContext,
+  onProposal: (p: CorrectionProposal, summary: JournalSummary) => void,
+  onReminder: (r: { contactName: string; text: string }) => void = () => {},
+): AgentTool[] {
   const getPL = agentTool({
     name: "get_profit_and_loss",
     description:
@@ -176,7 +214,7 @@ export function buildTools(ctx: ToolContext, onProposal: (p: CorrectionProposal,
       period: Period.nullable(),
       text: z.string().nullable().describe("Words in the description or customer/supplier name, e.g. 'ayam' or 'Bu Sari'."),
       category: z.enum(CATEGORY_NAMES).nullable(),
-      type: z.enum(["sale", "expense", "owner_capital", "owner_drawing"]).nullable(),
+      type: z.enum(["sale", "expense", "owner_capital", "owner_drawing", "receivable", "payable", "settlement"]).nullable(),
       include_cancelled: z.boolean().nullable().describe("Default true; cancelled entries are marked."),
       limit: z.number().int().min(1).max(50).nullable(),
     }),
@@ -202,6 +240,64 @@ export function buildTools(ctx: ToolContext, onProposal: (p: CorrectionProposal,
           },
         };
       });
+    },
+  });
+
+  const openItems = agentTool({
+    name: "get_open_items",
+    description:
+      "Receivables (piutang: customers who haven't paid, 'siapa yang belum bayar') and payables (utang: what the owner still owes suppliers). " +
+      "Balances per contact with the oldest unpaid date and the open items; totals computed for you.",
+    input: z.object({
+      kind: z.enum(["receivable", "payable"]).nullable().describe("receivable = piutang, payable = utang; null for both."),
+      contact: z.string().nullable().describe("A customer or supplier name, e.g. 'Bu Sari'; null for everyone."),
+    }),
+    async run(i) {
+      return read(ctx, async (tx) => {
+        let contactId: string | undefined;
+        if (i.contact) {
+          const c = await lookupContact(tx, ctx.businessId, i.contact);
+          if (!c) return { output: { contacts: [], note: `no contact named "${i.contact}" has any recorded debt` } };
+          contactId = c.id;
+        }
+        const all = await openBalances(tx, ctx.businessId, { kind: i.kind ?? undefined, contactId });
+        const total = (k: "receivable" | "payable") => rp(all.filter((b) => b.kind === k && b.balanceIdr > 0n).reduce((s, b) => s + b.balanceIdr, 0n));
+        return {
+          output: {
+            ...(i.kind !== "payable" ? { total_receivable: total("receivable") } : {}),
+            ...(i.kind !== "receivable" ? { total_payable: total("payable") } : {}),
+            ...(i.kind ? { total: total(i.kind) } : {}),
+            contacts: all.slice(0, 20).map((b) => ({
+              name: b.name,
+              type: b.kind === "receivable" ? "piutang (dia utang ke owner)" : "utang (owner utang ke dia)",
+              balance: b.balanceIdr < 0n ? `lebih bayar ${rp(-b.balanceIdr)}` : rp(b.balanceIdr),
+              since: b.oldestOpenDate,
+              last_payment: b.lastPaymentDate,
+              open_items: b.openItems.slice(0, 5).map((o) => ({ date: o.date, description: o.description, remaining: rp(o.openIdr) })),
+            })),
+            note: all.length > 20 ? `showing 20 of ${all.length} contacts` : undefined,
+          },
+        };
+      });
+    },
+  });
+
+  const reminder = agentTool({
+    name: "draft_reminder",
+    description:
+      "Write a polite payment reminder for a customer who owes the owner, for the owner to forward. The text is generated for you and sent " +
+      "to the owner automatically; after this succeeds, stop.",
+    input: z.object({ contact: z.string().describe("The customer's name as the owner wrote it.") }),
+    async run(i) {
+      const found = await read(ctx, async (tx) => {
+        const c = await lookupContact(tx, ctx.businessId, i.contact);
+        if (!c) return undefined;
+        const [b] = await openBalances(tx, ctx.businessId, { contactId: c.id, kind: "receivable" });
+        return b;
+      });
+      if (!found || found.balanceIdr <= 0n) return { output: { error: `${i.contact} has no unpaid receivable` } };
+      onReminder({ contactName: found.name, text: reminderText(ctx.businessName ?? "kami", found) });
+      return { output: { status: "reminder draft will be sent to the owner" }, stop: true };
     },
   });
 
@@ -265,5 +361,5 @@ export function buildTools(ctx: ToolContext, onProposal: (p: CorrectionProposal,
     },
   });
 
-  return [getPL, getCash, list, propose];
+  return [getPL, getCash, list, openItems, reminder, propose];
 }

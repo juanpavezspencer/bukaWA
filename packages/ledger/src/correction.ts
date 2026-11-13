@@ -15,7 +15,7 @@ export interface CorrectableJournal {
   description: string;
   kind: string;
   reversed: boolean;
-  lines: Array<{ code: string; debit: bigint; credit: bigint; memo: string | null }>;
+  lines: Array<{ code: string; debit: bigint; credit: bigint; memo: string | null; contactId?: string | null }>;
 }
 
 export interface Correction {
@@ -47,7 +47,7 @@ export function correctedDraft(businessId: string, original: CorrectableJournal,
   }
   const payLines = original.lines.filter((l) => CASH.has(l.code));
   const catLines = original.lines.filter((l) => !CASH.has(l.code));
-  if (c.amountIdr !== undefined && (original.lines.length !== 2 || payLines.length !== 1)) {
+  if (c.amountIdr !== undefined && original.lines.length !== 2) {
     throw new LedgerError("NOT_CORRECTABLE", "amount can only be changed on a simple two-line entry; cancel it and record it again");
   }
   if (c.paymentCode !== undefined) {
@@ -72,7 +72,10 @@ export function correctedDraft(businessId: string, original: CorrectableJournal,
     lines: original.lines.map((l) => {
       const accountCode = CASH.has(l.code) ? (c.paymentCode ?? l.code) : (c.categoryCode ?? l.code);
       const amt = (side: bigint) => (c.amountIdr !== undefined ? c.amountIdr : side);
-      return l.debit > 0n ? { accountCode, debit: amt(l.debit), memo: l.memo } : { accountCode, credit: amt(l.credit), memo: l.memo };
+      const contact = l.contactId ? { contactId: l.contactId } : {};
+      return l.debit > 0n
+        ? { accountCode, debit: amt(l.debit), memo: l.memo, ...contact }
+        : { accountCode, credit: amt(l.credit), memo: l.memo, ...contact };
     }),
   };
 }

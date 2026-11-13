@@ -7,6 +7,8 @@ import {
   businesses,
   captures,
   categoryRules,
+  dueSummaryBusinesses,
+  summarySchedules,
   contacts,
   journalLines,
   journals,
@@ -59,6 +61,7 @@ async function populate(businessId: string): Promise<void> {
     await tx.insert(messages).values({ businessId, direction: "inbound", type: "text", body: "halo" });
     await tx.insert(auditLog).values({ businessId, actor: "test", action: "create", entity: "journal" });
     await tx.insert(categoryRules).values({ businessId, pattern: "ayam", kind: "expense", accountId: await accountId(tx, businessId, "5100") });
+    await tx.insert(summarySchedules).values({ businessId, frequency: "daily", localTime: "21:00", nextRunAt: new Date("2026-11-12T14:00:00Z") });
   });
 }
 
@@ -114,6 +117,23 @@ describe("row-level security", () => {
       return rows<{ n: number }>(r)[0]!.n;
     });
     expect(total).toBe(0);
+  });
+
+  it("lets the scheduler find due summaries without seeing anything else", async () => {
+    expect((await dueSummaryBusinesses(db, new Date("2026-11-12T14:00:00Z"))).sort()).toEqual([bizA, bizB].sort());
+    expect(await dueSummaryBusinesses(db, new Date("2026-11-12T13:59:00Z"))).toEqual([]);
+    // The scan flag opens summary_schedules for reading only, and nothing else.
+    const seen = await withAppRole(db, async (tx) => {
+      await tx.execute(sql`select set_config('app.summary_scan', 'on', true)`);
+      const n = async (t: string) => rows<{ n: number }>(await tx.execute(sql`select count(*)::int as n from ${sql.identifier(t)}`))[0]!.n;
+      return { journals: await n("journals"), businesses: await n("businesses"), users: await n("users") };
+    });
+    expect(seen).toEqual({ journals: 0, businesses: 0, users: 0 });
+    const updated = await withAppRole(db, async (tx) => {
+      await tx.execute(sql`select set_config('app.summary_scan', 'on', true)`);
+      return tx.update(summarySchedules).set({ enabled: false }).returning();
+    });
+    expect(updated).toHaveLength(0);
   });
 
   it("rejects writing a row tagged with another business", async () => {

@@ -22,6 +22,9 @@ function extract(text: string) {
   const t = text.toLowerCase();
   const kind = /modal/.test(t) ? "owner_capital"
     : /prive|pribadi/.test(t) ? "owner_drawing"
+    : /lunas|bayar utang|nyicil|cicil/.test(t) ? "settlement"
+    : /\b(utang|ngutang|belum bayar|bon)\b/.test(t) && /\bke\b/.test(t) ? "payable"
+    : /\b(utang|ngutang|belum bayar|bon)\b/.test(t) ? "receivable"
     : /jual|terima|dapat|laku|order|pesanan/.test(t) ? "sale"
     : "expense";
   const times = /(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)*\s*(?:rb|ribu|k|jt)?)/i.exec(text);
@@ -35,9 +38,10 @@ function extract(text: string) {
         amount_text: amount,
         items: times ? [{ name: description.replace(/^(jual|beli|belanja)\s+/i, ""), qty_text: times[1]!, unit: null, unit_price_text: times[2]!.trim(), line_total_text: null }] : [],
         date_text: DATE.exec(text)?.[1] ?? null,
-        counterparty: null,
-        payment_text: null,
-        suggested_category: kind === "sale" ? "Penjualan" : null,
+        // "Bu Sari utang 350rb", "bon beras ke Toko Jaya 800rb": an honorific + name, or "ke <Name>".
+        counterparty: /\b(?:bu|pak|mbak|mas|ibu|bapak)\s+[a-z]+/i.exec(text)?.[0] ?? /\bke\s+((?:toko|warung|agen)\s+[a-z]+)/i.exec(text)?.[1] ?? null,
+        payment_text: /\b(cash|tunai|tf|transfer|qris|gopay|ovo|dana)\b/i.exec(text)?.[1] ?? null,
+        suggested_category: kind === "sale" || kind === "receivable" ? "Penjualan" : null,
         confidence: { kind: 0.6, amount: 0.9, date: 0.9, counterparty: 0.9, payment_method: 0.9 },
       },
     ],

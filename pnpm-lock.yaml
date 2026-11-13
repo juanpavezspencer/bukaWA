@@ -319,6 +319,9 @@ importers:
       '@bukuwa/db':
         specifier: workspace:*
         version: link:../db
+      '@bukuwa/idn':
+        specifier: workspace:*
+        version: link:../idn
       drizzle-orm:
         specifier: ^0.44.0
         version: 0.44.7(@electric-sql/pglite@0.3.16)(@opentelemetry/api@1.10.0)(@types/pg@8.23.1)(pg@8.23.1)

@@ -12,6 +12,7 @@ import {
   pgEnum,
   pgTable,
   real,
+  smallint,
   text,
   timestamp,
   unique,
@@ -56,6 +57,7 @@ export const captureStatus = pgEnum("capture_status", [
   "cancelled",
   "failed",
 ]);
+export const summaryFrequency = pgEnum("summary_frequency", ["daily", "weekly"]);
 export const messageDirection = pgEnum("message_direction", ["inbound", "outbound"]);
 
 export const businesses = pgTable("businesses", {
@@ -310,6 +312,39 @@ export const categoryRules = pgTable(
 );
 
 /**
+ * Daily / weekly summary push (F9), one row per business. The worker's
+ * scheduler finds rows with next_run_at due, sends the summary template, and
+ * moves next_run_at forward; last_period_key makes each period send once.
+ */
+export const summarySchedules = pgTable(
+  "summary_schedules",
+  {
+    businessId: uuid("business_id")
+      .primaryKey()
+      .references(() => businesses.id),
+    frequency: summaryFrequency("frequency").notNull(),
+    /** "HH:MM" in the business's timezone. */
+    localTime: text("local_time").notNull(),
+    /** Weekly only: 0 = Sunday ... 6 = Saturday. */
+    weekday: smallint("weekday"),
+    enabled: boolean("enabled").notNull().default(true),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }).notNull(),
+    lastPeriodKey: text("last_period_key"),
+    lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("summary_schedules_due_idx").on(t.nextRunAt).where(sql`${t.enabled}`),
+    check("summary_schedules_time_format", sql`${t.localTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`),
+    check(
+      "summary_schedules_weekday",
+      sql`(${t.frequency} = 'daily' and ${t.weekday} is null) or (${t.frequency} = 'weekly' and ${t.weekday} between 0 and 6)`,
+    ),
+  ],
+);
+
+/**
  * Raw inbound WhatsApp messages, written by the webhook before the sender is
  * resolved to a business. Not tenant-scoped (sender may not be onboarded yet),
  * so it has no RLS; only the webhook/worker roles can touch it.
@@ -350,4 +385,5 @@ export const TENANT_TABLES = [
   "messages",
   "audit_log",
   "category_rules",
+  "summary_schedules",
 ] as const;

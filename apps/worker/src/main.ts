@@ -7,6 +7,7 @@ import { aiConfigFromEnv, anthropicChatModel, anthropicModel } from "@bukuwa/ai"
 import { cloudApiMediaFetcher, cloudApiSender, WA_INBOUND_QUEUE } from "@bukuwa/wa";
 import { loadConfig } from "./config.js";
 import { processInbound } from "./inbound.js";
+import { runDueSummaries } from "./summary.js";
 import { fsMediaStore } from "./media/store.js";
 
 const config = loadConfig();
@@ -47,4 +48,11 @@ await boss.createQueue(WA_INBOUND_QUEUE);
 await boss.work<{ waMessageId: string }>(WA_INBOUND_QUEUE, async (jobs) => {
   for (const job of jobs) await processInbound(deps, job.data.waMessageId);
 });
-console.log(JSON.stringify({ level: "info", event: "worker.started", queue: WA_INBOUND_QUEUE }));
+// F9: one tick a minute sends the summaries that are due (spec: within 5 minutes).
+const SUMMARY_TICK_QUEUE = "summaries.tick";
+await boss.createQueue(SUMMARY_TICK_QUEUE);
+await boss.schedule(SUMMARY_TICK_QUEUE, "* * * * *");
+await boss.work(SUMMARY_TICK_QUEUE, async () => {
+  await runDueSummaries(deps, new Date());
+});
+console.log(JSON.stringify({ level: "info", event: "worker.started", queues: [WA_INBOUND_QUEUE, SUMMARY_TICK_QUEUE] }));

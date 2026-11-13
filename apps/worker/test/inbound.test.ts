@@ -18,7 +18,7 @@ import {
 } from "@bukuwa/db";
 import { createTestDb } from "@bukuwa/db/testing";
 import { trialBalance } from "@bukuwa/ledger";
-import type { OutboundMessage, WaSender } from "@bukuwa/wa";
+import { messageText, type OutboundMessage, type WaSender } from "@bukuwa/wa";
 import { processInbound, type InboundDeps } from "../src/inbound.js";
 import { aiConfig, ScriptedModel } from "./fake-model.js";
 
@@ -35,7 +35,7 @@ class FakeSender implements WaSender {
     return `wamid.out.${this.sent.length}`;
   }
   lastBody() {
-    return this.sent.at(-1)!.msg.body;
+    return messageText(this.sent.at(-1)!.msg);
   }
 }
 

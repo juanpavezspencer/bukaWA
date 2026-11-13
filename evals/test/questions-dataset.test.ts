@@ -18,27 +18,32 @@ beforeAll(async () => {
   books = await seedFixtureBooks();
 }, 60_000);
 
-function tools(message: string) {
-  return buildTools({ db: books.db, businessId: books.businessId, today: FIXTURE_TODAY, message }, () => {});
-}
-
 describe("question dataset", () => {
   it("has about 100 well-formed cases", () => {
     expect(cases.length).toBeGreaterThanOrEqual(100);
     expect(new Set(cases.map((c) => c.id)).size).toBe(cases.length);
     for (const c of cases) {
-      if (c.expected.kind === "answer") expect(c.expected.must_include?.length, c.id).toBeGreaterThan(0);
+      if (c.expected.kind === "answer" || c.expected.kind === "reminder") expect(c.expected.must_include?.length, c.id).toBeGreaterThan(0);
       if (c.expected.kind === "correction") expect(c.expected.correction, c.id).toBeDefined();
     }
   });
 
   it.each(cases.filter((c) => c.oracle).map((c) => [c.id, c.text, c] as const))("%s %s: oracle tools return the expected amounts", async (_id, _t, c) => {
-    const byName = new Map(tools(c.text).map((t) => [t.name, t]));
+    let reminder = "";
+    const byName = new Map(
+      buildTools({ db: books.db, businessId: books.businessId, today: FIXTURE_TODAY, message: c.text, businessName: "Catering Bu Rina" }, () => {}, (r) => {
+        reminder = `${r.contactName}: ${r.text}`;
+      }).map((t) => [t.name, t]),
+    );
     let out = "";
     for (const call of c.oracle!) {
       const tool = byName.get(call.tool)!;
       const r = await tool.run(tool.input.parse(call.input));
       out += JSON.stringify(r.output);
+    }
+    if (c.expected.kind === "reminder") {
+      expect(reminder.startsWith(`${c.expected.reminder_contact}: `), reminder).toBe(true);
+      out = reminder;
     }
     for (const amount of c.expected.must_include!) expect(out, `${amount} not in ${out.slice(0, 400)}`).toContain(amount);
   });
