@@ -53,11 +53,13 @@ export interface QuestionCase {
     intent: "question" | "correction";
     /**
      * answer: must quote every must_include amount; unsupported: must quote no amounts; correction: must propose this;
-     * reminder: must draft a reminder for reminder_contact that quotes must_include.
+     * reminder: must draft a reminder for reminder_contact that quotes must_include;
+     * report: must ask for the monthly report of this month and format.
      */
-    kind: "answer" | "unsupported" | "correction" | "reminder";
+    kind: "answer" | "unsupported" | "correction" | "reminder" | "report";
     must_include?: string[];
     reminder_contact?: string;
+    report?: { month: string; format: "pdf" | "xlsx" };
     correction?: { entry_key: string; action: "change" | "cancel"; amount_idr?: string; payment_code?: string };
   };
   /** The tool call(s) an ideal agent makes; an offline test checks they return the expected amounts. */

@@ -130,10 +130,19 @@ async function runQuestion(books: FixtureBooks, c: QuestionCase): Promise<CaseRe
     if (intent !== "question" && intent !== "correction") {
       out = { kind: "not_routed", intent };
     } else {
-      const r = await askBooks(chat, cfg, { db: books.db, businessId: books.businessId, businessName: FIXTURE_BUSINESS, today: c.today, text: c.text });
+      const r = await askBooks(chat, cfg, {
+        db: books.db,
+        businessId: books.businessId,
+        businessName: FIXTURE_BUSINESS,
+        today: c.today,
+        text: c.text,
+        // As in production: tax rules come from the seeded tax_profiles.
+        tax: { defaultRegime: process.env.TAX_DEFAULT_REGIME ?? "umkm_final_individual" },
+      });
       out =
         r.kind === "answer" ? { kind: "answer", text: r.text }
         : r.kind === "reminder" ? { kind: "reminder", contactName: r.contactName, text: r.text }
+        : r.kind === "report" ? { kind: "report", month: r.month, format: r.format }
         : { kind: "proposal", journalId: r.proposal.journalId, action: r.proposal.action, amountIdr: r.proposal.amountIdr, paymentCode: r.proposal.paymentCode };
     }
   } catch (err) {

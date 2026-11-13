@@ -8,6 +8,8 @@ import { cloudApiMediaFetcher, cloudApiSender, WA_INBOUND_QUEUE } from "@bukuwa/
 import { loadConfig } from "./config.js";
 import { processInbound } from "./inbound.js";
 import { runDueSummaries } from "./summary.js";
+import { runDueTaxNotices } from "./tax.js";
+import { linkKeyFromBase64, linkSigner } from "@bukuwa/reports";
 import { fsMediaStore } from "./media/store.js";
 
 const config = loadConfig();
@@ -33,6 +35,17 @@ const deps = {
     }),
     store: fsMediaStore(config.MEDIA_DIR),
   },
+  tax: {
+    defaultRegime: config.TAX_DEFAULT_REGIME,
+    noticeLocalTime: config.TAX_NOTICE_LOCAL_TIME,
+    reportLinkTtlMinutes: config.REPORT_LINK_TTL_MINUTES,
+    links: linkSigner({
+      key: linkKeyFromBase64(config.REPORT_LINK_KEY),
+      baseUrl: config.PUBLIC_BASE_URL,
+      reportTtlMinutes: config.REPORT_LINK_TTL_MINUTES,
+      evidenceTtlHours: config.EVIDENCE_LINK_TTL_HOURS,
+    }),
+  },
   config: {
     privacyPolicyUrl: config.PRIVACY_POLICY_URL,
     consentVersion: config.CONSENT_VERSION,
@@ -55,4 +68,11 @@ await boss.schedule(SUMMARY_TICK_QUEUE, "* * * * *");
 await boss.work(SUMMARY_TICK_QUEUE, async () => {
   await runDueSummaries(deps, new Date());
 });
-console.log(JSON.stringify({ level: "info", event: "worker.started", queues: [WA_INBOUND_QUEUE, SUMMARY_TICK_QUEUE] }));
+// Flow E: month-end tax notices, checked every 10 minutes (they go out on the 1st).
+const TAX_NOTICE_TICK_QUEUE = "tax_notices.tick";
+await boss.createQueue(TAX_NOTICE_TICK_QUEUE);
+await boss.schedule(TAX_NOTICE_TICK_QUEUE, "*/10 * * * *");
+await boss.work(TAX_NOTICE_TICK_QUEUE, async () => {
+  await runDueTaxNotices(deps, new Date());
+});
+console.log(JSON.stringify({ level: "info", event: "worker.started", queues: [WA_INBOUND_QUEUE, SUMMARY_TICK_QUEUE, TAX_NOTICE_TICK_QUEUE] }));

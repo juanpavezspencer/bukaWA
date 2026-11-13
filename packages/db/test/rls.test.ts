@@ -8,7 +8,11 @@ import {
   captures,
   categoryRules,
   dueSummaryBusinesses,
+  dueTaxNoticeBusinesses,
+  reports,
   summarySchedules,
+  taxNoticeSchedules,
+  taxProfiles,
   contacts,
   journalLines,
   journals,
@@ -62,6 +66,17 @@ async function populate(businessId: string): Promise<void> {
     await tx.insert(auditLog).values({ businessId, actor: "test", action: "create", entity: "journal" });
     await tx.insert(categoryRules).values({ businessId, pattern: "ayam", kind: "expense", accountId: await accountId(tx, businessId, "5100") });
     await tx.insert(summarySchedules).values({ businessId, frequency: "daily", localTime: "21:00", nextRunAt: new Date("2026-11-12T14:00:00Z") });
+    await tx.insert(reports).values({
+      businessId,
+      kind: "monthly",
+      format: "pdf",
+      periodFrom: "2026-10-01",
+      periodTo: "2026-10-31",
+      fileName: "laporan.pdf",
+      mimeType: "application/pdf",
+      content: Buffer.from("%PDF-"),
+    });
+    await tx.insert(taxNoticeSchedules).values({ businessId, nextRunAt: new Date("2026-12-01T01:00:00Z") });
   });
 }
 
@@ -134,6 +149,48 @@ describe("row-level security", () => {
       return tx.update(summarySchedules).set({ enabled: false }).returning();
     });
     expect(updated).toHaveLength(0);
+  });
+
+  it("lets the scheduler find due tax notices without seeing anything else", async () => {
+    expect((await dueTaxNoticeBusinesses(db, new Date("2026-12-01T01:00:00Z"))).sort()).toEqual([bizA, bizB].sort());
+    expect(await dueTaxNoticeBusinesses(db, new Date("2026-12-01T00:59:00Z"))).toEqual([]);
+    const seen = await withAppRole(db, async (tx) => {
+      await tx.execute(sql`select set_config('app.tax_notice_scan', 'on', true)`);
+      const n = async (t: string) => rows<{ n: number }>(await tx.execute(sql`select count(*)::int as n from ${sql.identifier(t)}`))[0]!.n;
+      return { reports: await n("reports"), businesses: await n("businesses"), summaries: await n("summary_schedules") };
+    });
+    expect(seen).toEqual({ reports: 0, businesses: 0, summaries: 0 });
+    const updated = await withAppRole(db, async (tx) => {
+      await tx.execute(sql`select set_config('app.tax_notice_scan', 'on', true)`);
+      return tx.update(taxNoticeSchedules).set({ enabled: false }).returning();
+    });
+    expect(updated).toHaveLength(0);
+  });
+
+  it("never serves another business's report file, even by id", async () => {
+    const [a] = await withBusiness(db, bizA, (tx) => tx.select({ id: reports.id }).from(reports));
+    const fromB = await withBusiness(db, bizB, (tx) => tx.select().from(reports).where(eq(reports.id, a!.id)));
+    expect(fromB).toEqual([]);
+  });
+
+  it("keeps generated reports insert-only for the app", async () => {
+    await expectPgError(
+      withBusiness(db, bizA, (tx) => tx.update(reports).set({ fileName: "x" })),
+      /permission denied/,
+    );
+    await expectPgError(
+      withBusiness(db, bizA, (tx) => tx.delete(reports)),
+      /permission denied/,
+    );
+  });
+
+  it("lets the app read tax profiles but never change them", async () => {
+    const profiles = await withAppRole(db, (tx) => tx.select().from(taxProfiles));
+    expect(profiles.length).toBeGreaterThan(0);
+    await expectPgError(
+      withAppRole(db, (tx) => tx.update(taxProfiles).set({ rateBps: 0 })),
+      /permission denied/,
+    );
   });
 
   it("rejects writing a row tagged with another business", async () => {

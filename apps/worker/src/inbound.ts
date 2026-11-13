@@ -30,7 +30,8 @@ import {
   noSpeechToText,
   SttUnavailableError,
 } from "@bukuwa/ai";
-import { parsePaymentMethod, parseRupiah, parseSummaryRequest, type SummaryRequest } from "@bukuwa/idn";
+import { parsePaymentMethod, parseRupiah, parseSummaryRequest, parseTaxRequest, type SummaryRequest, type TaxRequest } from "@bukuwa/idn";
+import type { ReportFormat } from "@bukuwa/reports";
 import {
   IMAGE_MIME_TYPES,
   inboundInput,
@@ -63,6 +64,7 @@ import {
 } from "./capture/flow.js";
 import { onboardingStep, type OnboardingState } from "./onboarding.js";
 import { handleSummaryRequest } from "./summary.js";
+import { ensureTaxNoticeSchedule, handleTaxRequest, parseReportReply, reportReply, type TaxDeps } from "./tax.js";
 
 export interface InboundDeps {
   db: Db;
@@ -71,6 +73,8 @@ export interface InboundDeps {
   ai: { model: StructuredModel; config: AiConfig; stt?: SpeechToText; chat?: ChatModel };
   /** Photo and voice capture; without it media gets a "not yet" reply. */
   media?: { fetcher: MediaFetcher; store: MediaStore };
+  /** Tax estimates, reports and the month-end notice (F10); without it they get a "not yet" reply. */
+  tax?: TaxDeps;
   config: { privacyPolicyUrl: string; consentVersion: string; trialDays: number; timezone: string };
   now?: () => Date;
   log?: (event: Record<string, unknown>) => void;
@@ -91,6 +95,7 @@ const REPLIES: Record<Exclude<Intent, "transaction">, string> = {
   unsupported: `Maaf, aku belum ngerti maksudnya. ${EXAMPLES}`,
 };
 
+const TAX_NOT_YET: OutboundMessage = { kind: "text", body: "Perkiraan pajak dan laporan bulanan segera hadir ya. 🙏" };
 const NOT_UNDERSTOOD: OutboundMessage = { kind: "text", body: REPLIES.unsupported };
 const MEDIA_NOT_YET: OutboundMessage = {
   kind: "text",
@@ -132,6 +137,8 @@ type Plan =
   | { kind: "answer_payment"; captureId: string; method: string }
   | { kind: "answer_counterparty"; captureId: string; name: string }
   | { kind: "summary"; request: SummaryRequest }
+  | { kind: "tax"; request: TaxRequest }
+  | { kind: "report"; month: string; format: ReportFormat }
   | { kind: "correction"; proposal: CorrectionProposal; summary: JournalSummary; modelVersion: string; text: string }
   | {
       kind: "new_capture";
@@ -194,7 +201,9 @@ async function planText(
       businessName: s.businessName,
       today,
       text,
+      tax: deps.tax ? { defaultRegime: deps.tax.defaultRegime } : undefined,
     });
+    if (r.kind === "report") return { kind: "report", month: r.month, format: r.format };
     if (r.kind === "proposal") return { kind: "correction", proposal: r.proposal, summary: r.summary, modelVersion: r.modelVersion, text };
     if (r.kind === "reminder") {
       return {
@@ -293,6 +302,8 @@ type Log = (event: Record<string, unknown>) => void;
 async function plan(deps: InboundDeps, s: Sender, waMessageId: string, today: string, log: Log): Promise<Plan> {
   if (!s.user) return { kind: "onboarding" };
   if (parseCaptureReply(s.input.replyId)) return { kind: "capture_action" };
+  const reportTap = parseReportReply(s.input.replyId);
+  if (reportTap) return deps.tax ? { kind: "report", ...reportTap } : { kind: "reply", replies: [TAX_NOT_YET] };
   try {
     if (s.media) return await planMedia(deps, s, s.media, waMessageId, today, log);
   } catch (err) {
@@ -326,6 +337,10 @@ async function plan(deps: InboundDeps, s: Sender, waMessageId: string, today: st
   // "ringkasan harian jam 9 malam", "stop ringkasan", "rekap": settings, parsed by code.
   const summary = parseSummaryRequest(text);
   if (summary) return { kind: "summary", request: summary };
+
+  // "pajak bulan lalu berapa?", "laporan oktober excel", "stop pengingat pajak".
+  const taxRequest = parseTaxRequest(text, today);
+  if (taxRequest) return deps.tax ? { kind: "tax", request: taxRequest } : { kind: "reply", replies: [TAX_NOT_YET] };
 
   try {
     return await planText(deps, s, text, today, { source: "text" });
@@ -363,6 +378,7 @@ async function runOnboarding(tx: Tx, deps: InboundDeps, s: Sender, now: () => Da
       now: now(),
     }));
     await tx.delete(onboardingSessions).where(eq(onboardingSessions.phoneHash, s.phoneHash));
+    if (deps.tax) await ensureTaxNoticeSchedule(tx, businessId, deps.config.timezone, now(), deps.tax.noticeLocalTime);
   } else if (result.state.step === "declined") {
     await tx.delete(onboardingSessions).where(eq(onboardingSessions.phoneHash, s.phoneHash));
   } else {
@@ -420,6 +436,12 @@ export async function processInbound(deps: InboundDeps, waMessageId: string): Pr
             { businessId: ctx.businessId, businessName: sender.businessName ?? "usahamu", today, timezone: sender.timezone, now: now() },
             p.request,
           );
+          break;
+        case "tax":
+          replies = await handleTaxRequest(tx, { ...ctx, now: now(), timezone: sender.timezone }, deps.tax!, p.request);
+          break;
+        case "report":
+          replies = await reportReply(tx, { ...ctx, now: now() }, deps.tax!, p.month, p.format);
           break;
         case "answer_counterparty":
           replies = await answerCounterparty(tx, p.captureId, p.name);

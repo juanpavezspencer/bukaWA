@@ -25,21 +25,34 @@ describe("question dataset", () => {
     for (const c of cases) {
       if (c.expected.kind === "answer" || c.expected.kind === "reminder") expect(c.expected.must_include?.length, c.id).toBeGreaterThan(0);
       if (c.expected.kind === "correction") expect(c.expected.correction, c.id).toBeDefined();
+      if (c.expected.kind === "report") expect(c.expected.report, c.id).toBeDefined();
     }
   });
 
   it.each(cases.filter((c) => c.oracle).map((c) => [c.id, c.text, c] as const))("%s %s: oracle tools return the expected amounts", async (_id, _t, c) => {
     let reminder = "";
+    let report: { month: string; format: string } | undefined;
     const byName = new Map(
-      buildTools({ db: books.db, businessId: books.businessId, today: FIXTURE_TODAY, message: c.text, businessName: "Catering Bu Rina" }, () => {}, (r) => {
-        reminder = `${r.contactName}: ${r.text}`;
-      }).map((t) => [t.name, t]),
+      buildTools(
+        { db: books.db, businessId: books.businessId, today: FIXTURE_TODAY, message: c.text, businessName: "Catering Bu Rina", tax: { defaultRegime: "umkm_final_individual" } },
+        () => {},
+        (r) => {
+          reminder = `${r.contactName}: ${r.text}`;
+        },
+        (r) => {
+          report = r;
+        },
+      ).map((t) => [t.name, t]),
     );
     let out = "";
     for (const call of c.oracle!) {
       const tool = byName.get(call.tool)!;
       const r = await tool.run(tool.input.parse(call.input));
       out += JSON.stringify(r.output);
+    }
+    if (c.expected.kind === "report") {
+      expect(report).toEqual(c.expected.report);
+      return;
     }
     if (c.expected.kind === "reminder") {
       expect(reminder.startsWith(`${c.expected.reminder_contact}: `), reminder).toBe(true);

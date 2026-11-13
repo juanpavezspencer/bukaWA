@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { accounts, journalLines, journals, rows, type Tx } from "@bukuwa/db";
 import { LedgerError } from "./errors.js";
 import { assertScope } from "./scope.js";
@@ -194,7 +194,7 @@ export interface TransactionFilters extends Partial<DateRange> {
 /** How many recent entries a filtered search looks through (MVP volumes are small). */
 const SCAN_LIMIT = 1000;
 
-async function summaries(tx: Tx, where: ReturnType<typeof and>, limit: number): Promise<JournalSummary[]> {
+async function summaries(tx: Tx, where: ReturnType<typeof and>, limit: number, order: "newest" | "oldest" = "newest"): Promise<JournalSummary[]> {
   const reversedBy = sql<boolean>`${sql.raw(REVERSED)}`;
   const heads = await tx
     .select({
@@ -207,7 +207,11 @@ async function summaries(tx: Tx, where: ReturnType<typeof and>, limit: number): 
     })
     .from(journals)
     .where(and(where, isNull(journals.reversesJournalId)))
-    .orderBy(desc(journals.date), desc(journals.createdAt))
+    .orderBy(
+      ...(order === "newest"
+        ? [desc(journals.date), desc(journals.createdAt)]
+        : [asc(journals.date), asc(journals.createdAt), asc(journals.description), asc(journals.id)]),
+    )
     .limit(limit);
   if (!heads.length) return [];
   const lines = await tx
@@ -293,6 +297,24 @@ export async function findTransactions(tx: Tx, businessId: string, f: Transactio
     count: active.length,
     totalIdr: active.reduce((s, t) => s + t.amountIdr, 0n),
   };
+}
+
+/**
+ * Every entry dated in the range, oldest first (reversing journals left out,
+ * reversed ones flagged). For reports, which must list everything: more than
+ * `cap` entries is an error, never a silently shortened list.
+ */
+export async function entriesInRange(tx: Tx, businessId: string, range: DateRange, cap = 5000): Promise<JournalSummary[]> {
+  await assertScope(tx, businessId);
+  if (range.from > range.to) throw new LedgerError("INVALID_DATE", `range starts after it ends: ${range.from} > ${range.to}`);
+  const found = await summaries(
+    tx,
+    and(eq(journals.businessId, businessId), gte(journals.date, range.from), lte(journals.date, range.to)),
+    cap + 1,
+    "oldest",
+  );
+  if (found.length > cap) throw new LedgerError("TOO_MANY_ENTRIES", `more than ${cap} entries between ${range.from} and ${range.to}; use a shorter period`);
+  return found;
 }
 
 /** One entry by id, or undefined if it isn't this business's (RLS) or doesn't exist. */

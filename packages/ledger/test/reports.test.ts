@@ -9,6 +9,7 @@ import {
   findOrCreateContact,
   findTransactions,
   listTransactions,
+  entriesInRange,
   postJournal,
   profitAndLoss,
   reverseJournal,
@@ -188,5 +189,29 @@ describe("getJournalSummary", () => {
   it("returns undefined for another business's journal", async () => {
     const otherId = await withBusiness(db, other, async (tx) => (await listTransactions(tx, other, {}))[0]!.id);
     expect(await withBusiness(db, biz, (tx) => getJournalSummary(tx, biz, otherId))).toBeUndefined();
+  });
+});
+
+describe("entriesInRange", () => {
+  it("lists every entry of a period oldest first, flagging reversed ones and hiding reversing journals", async () => {
+    const all = await withBusiness(db, biz, (tx) => entriesInRange(tx, biz, { from: "2026-11-01", to: "2026-11-30" }));
+    expect(all.map((t) => [t.date, t.description, t.reversed])).toEqual([
+      ["2026-11-01", "Modal awal", false],
+      ["2026-11-09", "Bayar listrik", false],
+      ["2026-11-10", "Jual nasi box", false],
+      ["2026-11-11", "Belanja ayam", false],
+      ["2026-11-12", "Jual kue lapis", false],
+      ["2026-11-12", "Prive", false],
+      ["2026-11-12", "Salah input", true],
+    ]);
+  });
+
+  it("refuses more entries than the cap instead of silently cutting the list", async () => {
+    await expect(withBusiness(db, biz, (tx) => entriesInRange(tx, biz, { from: "2026-11-01", to: "2026-11-30" }, 3))).rejects.toThrow(LedgerError);
+  });
+
+  it("never returns another business's entries", async () => {
+    const all = await withBusiness(db, other, (tx) => entriesInRange(tx, other, { from: "2026-11-01", to: "2026-11-30" }));
+    expect(all.map((t) => t.amountIdr)).toEqual([9_999_000n]);
   });
 });

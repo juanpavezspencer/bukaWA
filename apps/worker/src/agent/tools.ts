@@ -18,6 +18,8 @@ import {
   type ProfitAndLoss,
 } from "@bukuwa/ledger";
 import { DEFAULT_CHART_OF_ACCOUNTS } from "@bukuwa/db";
+import { dateLabel, formatRate, monthLabel, TAX_DISCLAIMER, taxEstimateFor, type ReportFormat } from "@bukuwa/reports";
+import { monthOf, previousMonth, TaxError } from "@bukuwa/tax";
 
 /*
  * The tools the Q&A agent may call (spec 7.3). All read through RLS for one
@@ -34,6 +36,29 @@ export interface ToolContext {
   message: string;
   /** Signs reminder drafts. */
   businessName?: string;
+  /** Tax and report tools are offered only when configured. */
+  tax?: { defaultRegime: string };
+}
+
+/** A report the owner asked for; generated and linked after the agent stops. */
+export interface ReportRequest {
+  month: string;
+  format: ReportFormat;
+}
+
+const MonthInput = z
+  .object({
+    preset: z.enum(["this_month", "last_month"]).nullable().describe("Use when the owner says 'bulan ini' or 'bulan lalu'."),
+    month: z.string().nullable().describe("Otherwise the month as YYYY-MM, e.g. 2026-10 for 'Oktober'."),
+  })
+  .describe("Which month. Null for both = last month (the one whose tax is due now).");
+
+function monthOfInput(i: z.infer<typeof MonthInput>, today: string): string | { error: string } {
+  const current = monthOf(today);
+  const m = i.preset === "this_month" ? current : i.preset === "last_month" ? previousMonth(current) : (i.month ?? previousMonth(current));
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(m)) return { error: "month must be YYYY-MM" };
+  if (m > current) return { error: `${m} hasn't started yet` };
+  return m;
 }
 
 /** A correction the owner still has to confirm with a button. */
@@ -151,6 +176,7 @@ export function buildTools(
   ctx: ToolContext,
   onProposal: (p: CorrectionProposal, summary: JournalSummary) => void,
   onReminder: (r: { contactName: string; text: string }) => void = () => {},
+  onReport: (r: ReportRequest) => void = () => {},
 ): AgentTool[] {
   const getPL = agentTool({
     name: "get_profit_and_loss",
@@ -361,5 +387,61 @@ export function buildTools(
     },
   });
 
-  return [getPL, getCash, list, openItems, reminder, propose];
+  const taxTools: AgentTool[] = [];
+  const tax = ctx.tax;
+  if (tax) {
+    taxTools.push(
+      agentTool({
+        name: "get_tax_estimate",
+        description:
+          "Estimated monthly final income tax (PPh final UMKM) from the books: turnover, year-to-date turnover, the yearly tax-free allowance, " +
+          "taxable turnover, the tax and its payment deadline. Everything is computed for you. It is an estimate, not tax advice.",
+        input: z.object({ period: MonthInput }),
+        async run(i) {
+          const month = monthOfInput(i.period, ctx.today);
+          if (typeof month !== "string") return { output: month };
+          try {
+            const t = await read(ctx, (tx) => taxEstimateFor(tx, ctx.businessId, { month, today: ctx.today, defaultRegime: tax.defaultRegime }));
+            return {
+              output: {
+                month: monthLabel(t.month),
+                counted_until: t.partial ? dateLabel(t.period.to) : undefined,
+                month_not_finished: t.partial,
+                rule: t.profileName,
+                rate: formatRate(t.rateBps),
+                turnover: rp(t.turnoverIdr),
+                turnover_since_january: rp(t.ytdTurnoverIdr),
+                yearly_tax_free_allowance: t.exemptThresholdIdr > 0n ? rp(t.exemptThresholdIdr) : undefined,
+                allowance_used_this_month: t.exemptThresholdIdr > 0n ? rp(t.exemptUsedThisMonthIdr) : undefined,
+                allowance_left: t.exemptThresholdIdr > 0n ? rp(t.exemptRemainingIdr) : undefined,
+                taxable_turnover: rp(t.taxableTurnoverIdr),
+                tax: rp(t.taxIdr),
+                pay_by: dateLabel(t.dueDate),
+                over_regime_turnover_cap: t.overTurnoverCap,
+                disclaimer: TAX_DISCLAIMER,
+              },
+            };
+          } catch (err) {
+            if (err instanceof TaxError) return { output: { error: err.message } };
+            throw err;
+          }
+        },
+      }),
+      agentTool({
+        name: "create_report_link",
+        description:
+          "Make the monthly report (profit and loss, tax estimate, sales with evidence, receivables/payables) as PDF or Excel and send the owner a " +
+          "download link. The link is sent automatically; after this succeeds, stop.",
+        input: z.object({ period: MonthInput, format: z.enum(["pdf", "xlsx"]).describe("pdf unless the owner asks for Excel.") }),
+        async run(i) {
+          const month = monthOfInput(i.period, ctx.today);
+          if (typeof month !== "string") return { output: month };
+          onReport({ month, format: i.format });
+          return { output: { status: "report link will be sent to the owner" }, stop: true };
+        },
+      }),
+    );
+  }
+
+  return [getPL, getCash, list, openItems, reminder, propose, ...taxTools];
 }

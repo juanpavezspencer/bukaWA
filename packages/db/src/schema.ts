@@ -59,6 +59,37 @@ export const captureStatus = pgEnum("capture_status", [
 ]);
 export const summaryFrequency = pgEnum("summary_frequency", ["daily", "weekly"]);
 export const messageDirection = pgEnum("message_direction", ["inbound", "outbound"]);
+export const reportFormat = pgEnum("report_format", ["pdf", "xlsx"]);
+
+/**
+ * Tax rules as data (spec 8): one row per version of a regime. Not
+ * tenant-scoped; the app role can only read it. Rates and thresholds change
+ * by inserting a new version (close the old one with valid_to), never in code.
+ */
+export const taxProfiles = pgTable(
+  "tax_profiles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    regime: text("regime").notNull(),
+    name: text("name").notNull(),
+    /** Basis points on gross turnover: 50 = 0.5%. */
+    rateBps: integer("rate_bps").notNull(),
+    annualExemptThresholdIdr: rupiah("annual_exempt_threshold_idr").notNull(),
+    annualTurnoverCapIdr: rupiah("annual_turnover_cap_idr"),
+    paymentDueDay: smallint("payment_due_day").notNull(),
+    validFrom: date("valid_from", { mode: "string" }).notNull(),
+    validTo: date("valid_to", { mode: "string" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("tax_profiles_regime_idx").on(t.regime, t.validFrom),
+    check("tax_profiles_rate", sql`${t.rateBps} between 0 and 10000`),
+    check("tax_profiles_threshold", sql`${t.annualExemptThresholdIdr} >= 0`),
+    check("tax_profiles_cap", sql`${t.annualTurnoverCapIdr} is null or ${t.annualTurnoverCapIdr} > 0`),
+    check("tax_profiles_due_day", sql`${t.paymentDueDay} between 1 and 28`),
+    check("tax_profiles_validity", sql`${t.validTo} is null or ${t.validTo} >= ${t.validFrom}`),
+  ],
+);
 
 export const businesses = pgTable("businesses", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -68,8 +99,8 @@ export const businesses = pgTable("businesses", {
   ownerPhoneHash: text("owner_phone_hash").notNull().unique(),
   ownerPhoneEnc: bytea("owner_phone_enc").notNull(),
   npwpEnc: bytea("npwp_enc"),
-  // FK to tax_profiles is added in milestone 6 when that table exists.
-  taxProfileId: uuid("tax_profile_id"),
+  /** The regime this business files under (any version of it); null = the configured default regime. */
+  taxProfileId: uuid("tax_profile_id").references(() => taxProfiles.id),
   timezone: text("timezone").notNull().default("Asia/Jakarta"),
   plan: text("plan").notNull().default("trial"),
   trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
@@ -345,6 +376,57 @@ export const summarySchedules = pgTable(
 );
 
 /**
+ * Generated monthly reports (F10). The file is kept with the row so the
+ * signed download link serves exactly what was generated (and audited);
+ * reports are small. Insert-only for the app.
+ */
+export const reports = pgTable(
+  "reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    kind: text("kind").notNull(),
+    format: reportFormat("format").notNull(),
+    periodFrom: date("period_from", { mode: "string" }).notNull(),
+    periodTo: date("period_to", { mode: "string" }).notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    content: bytea("content").notNull(),
+    createdBy: uuid("created_by"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("reports_business_created_idx").on(t.businessId, t.createdAt),
+    check("reports_period", sql`${t.periodTo} >= ${t.periodFrom}`),
+  ],
+);
+
+/**
+ * Month-end tax message (Flow E), one row per business. Like
+ * summary_schedules: the scheduler finds due rows, sends last month's
+ * estimate, and moves next_run_at to the next month; last_period makes each
+ * month send once.
+ */
+export const taxNoticeSchedules = pgTable(
+  "tax_notice_schedules",
+  {
+    businessId: uuid("business_id")
+      .primaryKey()
+      .references(() => businesses.id),
+    enabled: boolean("enabled").notNull().default(true),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }).notNull(),
+    /** "YYYY-MM" of the last month a notice went out for. */
+    lastPeriod: text("last_period"),
+    lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("tax_notice_schedules_due_idx").on(t.nextRunAt).where(sql`${t.enabled}`)],
+);
+
+/**
  * Raw inbound WhatsApp messages, written by the webhook before the sender is
  * resolved to a business. Not tenant-scoped (sender may not be onboarded yet),
  * so it has no RLS; only the webhook/worker roles can touch it.
@@ -386,4 +468,6 @@ export const TENANT_TABLES = [
   "audit_log",
   "category_rules",
   "summary_schedules",
+  "reports",
+  "tax_notice_schedules",
 ] as const;

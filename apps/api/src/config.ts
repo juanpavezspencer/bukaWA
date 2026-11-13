@@ -9,6 +9,10 @@ const EnvSchema = z.object({
   WA_VERIFY_TOKEN: z.string().min(8),
   /** Max accepted webhook body, bytes. */
   WA_WEBHOOK_MAX_BYTES: z.coerce.number().int().positive().default(1_000_000),
+  /** base64, >= 32 bytes; same value as the worker's. Verifies report and evidence links. */
+  REPORT_LINK_KEY: z.string().min(1),
+  /** Where the worker keeps original photos and voice notes (local disk until the Cloud Storage adapter lands). */
+  MEDIA_DIR: z.string().min(1),
 });
 
 export type ApiConfig = z.infer<typeof EnvSchema>;
