@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@bukuwa/db": "workspace:*",
+    "@bukuwa/idn": "workspace:*",
+    "@bukuwa/ledger": "workspace:*",
     "@bukuwa/reports": "workspace:*",
     "@bukuwa/wa": "workspace:*",
     "@hono/node-server": "^1.13.0",
@@ -23,5 +25,10 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.3.0",
     "@types/pg": "^8.23.1"
+  },
+  "exports": {
+    "./app": "./src/app.ts",
+    "./dashboard": "./src/dashboard.ts",
+    "./admin": "./src/admin.ts"
   }
 }

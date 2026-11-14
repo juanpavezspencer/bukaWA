@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import PgBoss from "pg-boss";
 import * as schema from "@bukuwa/db";
-import { piiKeysFromBase64, type Db } from "@bukuwa/db";
+import { hashPii, piiKeysFromBase64, toE164, type Db } from "@bukuwa/db";
 import { aiConfigFromEnv, anthropicChatModel, anthropicModel } from "@bukuwa/ai";
 import { cloudApiMediaFetcher, cloudApiSender, WA_INBOUND_QUEUE } from "@bukuwa/wa";
 import { loadConfig } from "./config.js";
@@ -16,6 +16,7 @@ const config = loadConfig();
 const pool = new pg.Pool({ connectionString: config.DATABASE_URL });
 const db = drizzle(pool, { schema }) as unknown as Db;
 
+const keys = piiKeysFromBase64(config.PII_HMAC_KEY, config.PII_ENC_KEY);
 const deps = {
   db,
   sender: cloudApiSender({
@@ -23,7 +24,18 @@ const deps = {
     accessToken: config.WA_ACCESS_TOKEN,
     apiVersion: config.WA_GRAPH_API_VERSION,
   }),
-  keys: piiKeysFromBase64(config.PII_HMAC_KEY, config.PII_ENC_KEY),
+  keys,
+  dashboard: {
+    webBaseUrl: config.WEB_BASE_URL,
+    loginTtlMinutes: config.LOGIN_LINK_TTL_MINUTES,
+    adminLoginTtlMinutes: config.ADMIN_LOGIN_TTL_MINUTES,
+    adminPhoneHashes: new Set(
+      config.ADMIN_PHONES.split(",")
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .map((p) => hashPii(keys, toE164(p))),
+    ),
+  },
   // Credentials resolve from the environment (ANTHROPIC_API_KEY or a profile).
   // No speech-to-text provider yet (spec 7.4: choose by benchmark), so voice notes get a "not yet" reply.
   ai: { model: anthropicModel(), chat: anthropicChatModel(), config: aiConfigFromEnv() },

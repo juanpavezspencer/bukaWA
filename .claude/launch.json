@@ -4,8 +4,22 @@
     {
       "name": "chat-simulator",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@bukuwa/worker", "dev:chat"],
+      "runtimeArgs": [
+        "--filter",
+        "@bukuwa/worker",
+        "dev:chat"
+      ],
       "port": 8788
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@bukuwa/web",
+        "dev:sim"
+      ],
+      "port": 3000
     }
   ]
 }

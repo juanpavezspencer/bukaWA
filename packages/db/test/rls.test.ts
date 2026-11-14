@@ -10,6 +10,9 @@ import {
   dueSummaryBusinesses,
   dueTaxNoticeBusinesses,
   reports,
+  captureReviews,
+  dashboardSessions,
+  loginTokens,
   summarySchedules,
   taxNoticeSchedules,
   taxProfiles,
@@ -21,6 +24,7 @@ import {
   TENANT_TABLES,
   users,
   findUserByPhoneHash,
+  withAdmin,
   withAppRole,
   withBusiness,
   type Db,
@@ -77,7 +81,13 @@ async function populate(businessId: string): Promise<void> {
       content: Buffer.from("%PDF-"),
     });
     await tx.insert(taxNoticeSchedules).values({ businessId, nextRunAt: new Date("2026-12-01T01:00:00Z") });
+    const [user] = await tx.select({ id: users.id }).from(users);
+    await tx.insert(loginTokens).values({ businessId, userId: user!.id, tokenHash: `t-${businessId}`, expiresAt: new Date("2026-11-13T00:15:00Z") });
+    await tx.insert(dashboardSessions).values({ businessId, userId: user!.id, sessionHash: `s-${businessId}`, expiresAt: new Date("2026-11-20T00:00:00Z") });
   });
+  // Reviews are written by the admin console role only.
+  const [cap] = await withBusiness(db, businessId, (tx) => tx.select({ id: captures.id }).from(captures));
+  await withAdmin(db, (tx) => tx.insert(captureReviews).values({ businessId, captureId: cap!.id, verdict: "correct", reviewer: "admin" }));
 }
 
 beforeAll(async () => {

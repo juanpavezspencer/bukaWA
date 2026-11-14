@@ -19,6 +19,8 @@ import { memoryMediaStore } from "../src/media/store.js";
 import { runDueSummaries } from "../src/summary.js";
 import { runDueTaxNotices, type TaxDeps } from "../src/tax.js";
 import { offlineModel } from "./offline-model.js";
+import { adminRoutes } from "@bukuwa/api/admin";
+import { dashboardRoutes } from "@bukuwa/api/dashboard";
 
 const useClaude = Boolean(process.env.ANTHROPIC_API_KEY);
 console.log(useClaude ? "chat simulator: using Claude" : "chat simulator: no ANTHROPIC_API_KEY, using the offline keyword stand-in (dev only)");
@@ -67,6 +69,10 @@ const tax: TaxDeps = {
   links: linkSigner({ key: linkKey, baseUrl: BASE_URL, reportTtlMinutes: 15, evidenceTtlHours: 168 }),
 };
 let seq = 0;
+// The dashboard (apps/web, `pnpm --filter @bukuwa/web dev`) proxies /api here. Type "dashboard" in the chat for a login link;
+// "admin" from one of DEV_ADMIN_PHONES (default 081299990000) for the staff console.
+const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:3000";
+const adminPhones = (process.env.DEV_ADMIN_PHONES ?? "081299990000").split(",").map((p) => p.trim()).filter(Boolean);
 
 async function reset() {
   ({ db } = await createTestDb());
@@ -81,6 +87,12 @@ async function reset() {
     // Photos need the real vision model; offline, media gets the "not yet" reply.
     media: useClaude ? { fetcher, store: mediaStore } : undefined,
     tax,
+    dashboard: {
+      webBaseUrl: WEB_ORIGIN,
+      loginTtlMinutes: 15,
+      adminLoginTtlMinutes: 10,
+      adminPhoneHashes: new Set(adminPhones.map((p) => hashPii(keys, toE164(p)))),
+    },
     config: { privacyPolicyUrl: "https://bukuwa.id/privasi", consentVersion: "dev", trialDays: 14, timezone: "Asia/Jakarta" },
     log: (e) => console.log(JSON.stringify(e)),
   };
@@ -164,6 +176,24 @@ const serveFile = (kind: LinkKind) => async (c: import("hono").Context) => {
 };
 app.get("/r/:token", serveFile("report"));
 app.get("/e/:token", serveFile("evidence"));
+// Dashboard and admin API, rebuilt per request because /reset swaps the database.
+const now = () => new Date();
+app.all("/api/admin/*", (c) =>
+  new Hono().route("/api/admin", adminRoutes({ db, cfg: { webOrigin: WEB_ORIGIN, sessionHours: 12, cookieSecure: false, reviewConfidenceBelow: 0.7 }, now })).fetch(c.req.raw),
+);
+app.all("/api/*", (c) =>
+  new Hono()
+    .route(
+      "/api",
+      dashboardRoutes({
+        db,
+        cfg: { webOrigin: WEB_ORIGIN, sessionTtlDays: 7, cookieSecure: false, defaultRegime: tax.defaultRegime, maxBuckets: 120, signer: tax.links },
+        now,
+        log: (e) => console.log(JSON.stringify(e)),
+      }),
+    )
+    .fetch(c.req.raw),
+);
 app.get("/state", async (c) => c.json(json(await stateFor(c.req.query("from") ?? ""))));
 app.post("/reset", async (c) => {
   await reset();

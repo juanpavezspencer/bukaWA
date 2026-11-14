@@ -10,6 +10,7 @@ import {
   findTransactions,
   listTransactions,
   entriesInRange,
+  cashFlow,
   postJournal,
   profitAndLoss,
   reverseJournal,
@@ -213,5 +214,21 @@ describe("entriesInRange", () => {
   it("never returns another business's entries", async () => {
     const all = await withBusiness(db, other, (tx) => entriesInRange(tx, other, { from: "2026-11-01", to: "2026-11-30" }));
     expect(all.map((t) => t.amountIdr)).toEqual([9_999_000n]);
+  });
+});
+
+describe("cashFlow", () => {
+  it("sums money in and out of Kas, Bank and E-wallet, leaving cancelled entries out", async () => {
+    const cf = await withBusiness(db, biz, (tx) => cashFlow(tx, biz, { from: "2026-11-01", to: "2026-11-30" }));
+    expect(cf).toEqual({ from: "2026-11-01", to: "2026-11-30", inIdr: 1_650_000n, outIdr: 625_000n, netIdr: 1_025_000n });
+  });
+
+  it("ignores moves between the owner's own money accounts", async () => {
+    const b = await createTestBusiness(db, "Pindah Saldo");
+    const cf = await withBusiness(db, b, async (tx) => {
+      await postJournal(tx, { businessId: b, date: "2026-11-05", description: "Setor ke bank", source: "manual", lines: [{ accountCode: "1110", debit: 500_000n }, { accountCode: "1100", credit: 500_000n }] });
+      return cashFlow(tx, b, { from: "2026-11-01", to: "2026-11-30" });
+    });
+    expect(cf).toMatchObject({ inIdr: 0n, outIdr: 0n });
   });
 });

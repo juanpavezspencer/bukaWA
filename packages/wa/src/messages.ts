@@ -1,6 +1,7 @@
 /** Outbound message shapes the bot uses. Limits follow the Cloud API. */
 export type OutboundMessage =
-  | { kind: "text"; body: string }
+  /** logBody: what the messages log keeps instead of body (e.g. with a login token redacted). */
+  | { kind: "text"; body: string; logBody?: string }
   | { kind: "buttons"; body: string; buttons: Array<{ id: string; title: string }> }
   | { kind: "list"; body: string; buttonText: string; rows: Array<{ id: string; title: string; description?: string }> }
   /**
@@ -153,7 +154,7 @@ export function messageText(msg: OutboundMessage): string {
 
 /** Plain-text rendering for the messages log. */
 export function messageLogBody(msg: OutboundMessage): string {
-  if (msg.kind === "text") return msg.body;
+  if (msg.kind === "text") return msg.logBody ?? msg.body;
   if (msg.kind === "template") {
     const buttons = TEMPLATES[msg.name]?.quickReplies ?? [];
     return `[template ${msg.name}]\n${renderTemplate(msg)}${buttons.length ? `\n[${buttons.join(" | ")}]` : ""}`;

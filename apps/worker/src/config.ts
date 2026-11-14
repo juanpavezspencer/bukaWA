@@ -30,6 +30,12 @@ const EnvSchema = z.object({
   TAX_DEFAULT_REGIME: z.string().min(1).default("umkm_final_individual"),
   /** Local time on the 1st when the month-end tax notice goes out. */
   TAX_NOTICE_LOCAL_TIME: z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/).default("08:00"),
+  /** Origin of apps/web; magic links point here. */
+  WEB_BASE_URL: z.string().url(),
+  LOGIN_LINK_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+  ADMIN_LOGIN_TTL_MINUTES: z.coerce.number().int().positive().default(10),
+  /** Comma-separated staff numbers (E.164) allowed into the admin console. */
+  ADMIN_PHONES: z.string().default(""),
 });
 
 export type WorkerConfig = z.infer<typeof EnvSchema>;
