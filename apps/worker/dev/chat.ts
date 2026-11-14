@@ -11,11 +11,13 @@ import { eq } from "drizzle-orm";
 import { businesses, hashPii, onboardingSessions, piiKeysFromBase64, toE164, users, waInbound, withBusiness, type Db } from "@bukuwa/db";
 import { createTestDb } from "@bukuwa/db/testing";
 import { trialBalance } from "@bukuwa/ledger";
-import { messageLogBody, type MediaFetcher, type OutboundMessage, type WaSender } from "@bukuwa/wa";
+import { messageLogBody, renderTemplate, TEMPLATES, type MediaFetcher, type OutboundMessage, type WaSender } from "@bukuwa/wa";
+import { linkSigner, openSignedFile, type LinkKind } from "@bukuwa/reports";
 import { aiConfigFromEnv, anthropicChatModel, anthropicModel } from "@bukuwa/ai";
 import { processInbound, type InboundDeps } from "../src/inbound.js";
 import { memoryMediaStore } from "../src/media/store.js";
 import { runDueSummaries } from "../src/summary.js";
+import { runDueTaxNotices, type TaxDeps } from "../src/tax.js";
 import { offlineModel } from "./offline-model.js";
 
 const useClaude = Boolean(process.env.ANTHROPIC_API_KEY);
@@ -24,11 +26,22 @@ console.log(useClaude ? "chat simulator: using Claude" : "chat simulator: no ANT
 const PORT = Number(process.env.PORT ?? 8788);
 const keys = piiKeysFromBase64(randomBytes(32).toString("base64"), randomBytes(32).toString("base64"));
 
+const linkKey = randomBytes(32);
+const BASE_URL = `http://localhost:${PORT}`;
+
+/** The browser shows templates as the text the owner would see; quick replies become tappable buttons. */
+function forBrowser(msg: OutboundMessage): OutboundMessage {
+  if (msg.kind !== "template") return msg;
+  const titles = TEMPLATES[msg.name]?.quickReplies ?? [];
+  const body = `[template ${msg.name}]\n${renderTemplate(msg)}`;
+  if (!titles.length || !msg.buttonPayloads?.length) return { kind: "text", body: messageLogBody(msg) };
+  return { kind: "buttons", body, buttons: titles.map((title, i) => ({ id: msg.buttonPayloads![i]!, title })) };
+}
+
 const outbox: Array<{ to: string; msg: OutboundMessage }> = [];
 const sender: WaSender = {
   async send(to, msg) {
-    // The browser shows templates as the text the owner would see.
-    outbox.push({ to, msg: msg.kind === "template" ? { kind: "text", body: messageLogBody(msg) } : msg });
+    outbox.push({ to, msg: forBrowser(msg) });
     return `wamid.dev.out.${outbox.length}`;
   },
 };
@@ -45,11 +58,20 @@ const fetcher: MediaFetcher = {
 
 let db: Db;
 let deps: InboundDeps;
+let mediaStore = memoryMediaStore();
+// Report and evidence links point back at this simulator, which serves them like apps/api.
+const tax: TaxDeps = {
+  defaultRegime: process.env.TAX_DEFAULT_REGIME ?? "umkm_final_individual",
+  noticeLocalTime: process.env.TAX_NOTICE_LOCAL_TIME ?? "08:00",
+  reportLinkTtlMinutes: 15,
+  links: linkSigner({ key: linkKey, baseUrl: BASE_URL, reportTtlMinutes: 15, evidenceTtlHours: 168 }),
+};
 let seq = 0;
 
 async function reset() {
   ({ db } = await createTestDb());
   outbox.length = 0;
+  mediaStore = memoryMediaStore();
   deps = {
     db,
     sender,
@@ -57,7 +79,8 @@ async function reset() {
     // Questions and corrections need the real model; offline they get the old "coming soon" reply.
     ai: { model: useClaude ? anthropicModel() : offlineModel, chat: useClaude ? anthropicChatModel() : undefined, config: aiConfigFromEnv() },
     // Photos need the real vision model; offline, media gets the "not yet" reply.
-    media: useClaude ? { fetcher, store: memoryMediaStore() } : undefined,
+    media: useClaude ? { fetcher, store: mediaStore } : undefined,
+    tax,
     config: { privacyPolicyUrl: "https://bukuwa.id/privasi", consentVersion: "dev", trialDays: 14, timezone: "Asia/Jakarta" },
     log: (e) => console.log(JSON.stringify(e)),
   };
@@ -124,6 +147,23 @@ app.post("/tick", async (c) => {
   const result = await runDueSummaries(deps, at ? new Date(at) : new Date());
   return c.json({ ...result, sent: outbox.slice(before) });
 });
+/** Month-end tax notices (Flow E): one scheduler tick, optionally pretending it is `at` (ISO time, e.g. 2026-12-01T01:05:00Z). */
+app.post("/tick-tax", async (c) => {
+  const at = c.req.query("at");
+  const before = outbox.length;
+  const result = await runDueTaxNotices({ ...deps, tax }, at ? new Date(at) : new Date());
+  return c.json({ ...result, sent: outbox.slice(before) });
+});
+const serveFile = (kind: LinkKind) => async (c: import("hono").Context) => {
+  const f = await openSignedFile({ db, key: linkKey, store: mediaStore }, kind, c.req.param("token") ?? "", new Date());
+  if (f.status !== 200) return c.text(f.status === 410 ? "Link ini sudah kedaluwarsa." : "Link tidak ditemukan.", f.status);
+  c.header("Content-Type", f.mimeType);
+  // Inline so the browser pane can show the PDF; the real API sends it as an attachment.
+  c.header("Content-Disposition", `inline; filename="${f.fileName}"`);
+  return c.body(f.bytes as Uint8Array<ArrayBuffer>);
+};
+app.get("/r/:token", serveFile("report"));
+app.get("/e/:token", serveFile("evidence"));
 app.get("/state", async (c) => c.json(json(await stateFor(c.req.query("from") ?? ""))));
 app.post("/reset", async (c) => {
   await reset();
@@ -171,7 +211,12 @@ const PAGE = /* html */ `<!doctype html>
 <aside><h2>Database state for this number</h2><pre id="state">(belum ada)</pre></aside>
 <script>
 const log = document.getElementById('log'), from = document.getElementById('from'), stateEl = document.getElementById('state');
-function bubble(cls, text) { const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text; log.appendChild(d); log.scrollTop = log.scrollHeight; return d; }
+function bubble(cls, text) { const d = document.createElement('div'); d.className = 'msg ' + cls;
+  for (const part of String(text).split(/(https?:\\/\\/\\S+)/)) {
+    if (/^https?:\\/\\//.test(part)) { const a = document.createElement('a'); a.href = part; a.target = '_blank'; a.textContent = part.length > 60 ? part.slice(0, 57) + '…' : part; d.appendChild(a); }
+    else d.appendChild(document.createTextNode(part));
+  }
+  log.appendChild(d); log.scrollTop = log.scrollHeight; return d; }
 function render(m) {
   const d = bubble('out', m.body);
   const opts = m.kind === 'buttons' ? m.buttons : m.kind === 'list' ? m.rows : null;

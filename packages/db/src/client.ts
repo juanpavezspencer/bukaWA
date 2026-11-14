@@ -67,6 +67,17 @@ export async function dueSummaryBusinesses(db: Db, now: Date, limit = 100): Prom
   });
 }
 
+/** Businesses whose month-end tax notice is due; same pattern as dueSummaryBusinesses. */
+export async function dueTaxNoticeBusinesses(db: Db, now: Date, limit = 100): Promise<string[]> {
+  return withAppRole(db, async (tx) => {
+    await tx.execute(sql`select set_config('app.tax_notice_scan', 'on', true)`);
+    const r = await tx.execute(
+      sql`select business_id from tax_notice_schedules where enabled and next_run_at <= ${now.toISOString()}::timestamptz order by next_run_at limit ${limit}`,
+    );
+    return rows<{ business_id: string }>(r).map((x) => x.business_id);
+  });
+}
+
 /**
  * Run `fn` as the app role with no tenant selected. Tenant tables return no
  * rows here; use it only for non-tenant tables such as wa_inbound.

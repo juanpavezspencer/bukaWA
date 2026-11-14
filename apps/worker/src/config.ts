@@ -18,6 +18,18 @@ const EnvSchema = z.object({
   MEDIA_DIR: z.string().min(1),
   /** WhatsApp caps audio and documents at 16 MB. */
   MEDIA_MAX_BYTES: z.coerce.number().int().positive().default(16 * 1024 * 1024),
+  /** Public origin of apps/api, which serves the signed report and evidence links. */
+  PUBLIC_BASE_URL: z.string().url(),
+  /** base64, >= 32 bytes; the same value as the API's, which verifies the links. */
+  REPORT_LINK_KEY: z.string().min(1),
+  /** Spec 8.2: signed links expire quickly. */
+  REPORT_LINK_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+  /** Evidence links inside a downloaded report; it is kept for a while, so they last longer. */
+  EVIDENCE_LINK_TTL_HOURS: z.coerce.number().int().positive().default(168),
+  /** Tax regime (tax_profiles.regime) for businesses without their own. */
+  TAX_DEFAULT_REGIME: z.string().min(1).default("umkm_final_individual"),
+  /** Local time on the 1st when the month-end tax notice goes out. */
+  TAX_NOTICE_LOCAL_TIME: z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/).default("08:00"),
 });
 
 export type WorkerConfig = z.infer<typeof EnvSchema>;

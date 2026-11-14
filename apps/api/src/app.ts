@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import type { Db } from "@bukuwa/db";
+import type { Db, MediaStore } from "@bukuwa/db";
+import { openSignedFile, type LinkKind } from "@bukuwa/reports";
 import type { ApiConfig } from "./config.js";
 import { markEnqueued, recordInbound } from "./inbox.js";
 import type { JobQueue } from "./queue.js";
@@ -11,15 +12,20 @@ export interface AppDeps {
   db: Db;
   queue: JobQueue;
   config: Pick<ApiConfig, "WA_APP_SECRET" | "WA_VERIFY_TOKEN" | "WA_WEBHOOK_MAX_BYTES">;
+  /** Signed report and evidence downloads (F10). */
+  files?: { key: Buffer; store?: MediaStore };
+  now?: () => Date;
   log?: (event: Record<string, unknown>) => void;
 }
 
 const defaultLog = (event: Record<string, unknown>) => console.log(JSON.stringify(event));
 
-export function createApp({ db, queue, config, log = defaultLog }: AppDeps): Hono {
+export function createApp({ db, queue, config, files, now = () => new Date(), log = defaultLog }: AppDeps): Hono {
   const app = new Hono();
 
   app.get("/healthz", (c) => c.text("ok"));
+
+  if (files) app.route("/", fileRoutes({ db, ...files, now, log }));
 
   // Meta subscription handshake.
   app.get("/webhooks/whatsapp", (c) => {
@@ -82,5 +88,37 @@ export function createApp({ db, queue, config, log = defaultLog }: AppDeps): Hon
     return c.text("internal error", 500);
   });
 
+  return app;
+}
+
+const FILE_ERRORS: Record<404 | 410, string> = {
+  404: "Link tidak ditemukan.",
+  410: "Link ini sudah kedaluwarsa. Minta link baru lewat WhatsApp ya.",
+};
+
+/**
+ * GET /r/:token (report) and /e/:token (evidence). Also mounted by the dev
+ * chat simulator. Responses are never cached and leak nothing about why a
+ * link failed beyond "expired".
+ */
+export function fileRoutes(deps: { db: Db; key: Buffer; store?: MediaStore; now: () => Date; log?: (e: Record<string, unknown>) => void }): Hono {
+  const app = new Hono();
+  const log = deps.log ?? defaultLog;
+  const serve = (kind: LinkKind) => async (c: import("hono").Context) => {
+    const f = await openSignedFile(deps, kind, c.req.param("token") ?? "", deps.now());
+    c.header("Cache-Control", "private, no-store");
+    c.header("Referrer-Policy", "no-referrer");
+    c.header("X-Content-Type-Options", "nosniff");
+    if (f.status !== 200) {
+      log({ level: "info", event: `files.${kind}.${f.status}` });
+      return c.text(FILE_ERRORS[f.status], f.status);
+    }
+    log({ level: "info", event: `files.${kind}.served`, bytes: f.bytes.byteLength });
+    c.header("Content-Type", f.mimeType);
+    c.header("Content-Disposition", `${f.disposition}; filename="${f.fileName.replace(/[^\w.-]/g, "_")}"`);
+    return c.body(f.bytes as Uint8Array<ArrayBuffer>);
+  };
+  app.get("/r/:token", serve("report"));
+  app.get("/e/:token", serve("evidence"));
   return app;
 }

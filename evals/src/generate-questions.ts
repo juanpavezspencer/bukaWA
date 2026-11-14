@@ -262,10 +262,30 @@ for (const [text, who] of [
   });
 }
 
+// --- tax and reports (F10) ------------------------------------------------------------------
+// These two were "not available yet" before milestone 6; they keep their ids (q-095, q-096).
+// The fixture's turnover stays under the yearly allowance, so the tax is Rp 0: the answer must
+// quote the turnover it came from.
+const month = (p: PeriodPreset) => resolvePeriod(p, FIXTURE_TODAY).from.slice(0, 7);
+const taxCase = (text: string, preset: "this_month" | "last_month", amounts: number[]) =>
+  add({
+    text,
+    expected: { intent: "question", kind: "answer", must_include: amounts.map(rp) },
+    oracle: [{ tool: "get_tax_estimate", input: { period: { preset, month: null } } }],
+    tags: ["tax"],
+  });
+const reportCase = (text: string, preset: "this_month" | "last_month", format: "pdf" | "xlsx") =>
+  add({
+    text,
+    expected: { intent: "question", kind: "report", report: { month: month(preset), format } },
+    oracle: [{ tool: "create_report_link", input: { period: { preset, month: null }, format } }],
+    tags: ["report"],
+  });
+taxCase("pajak bulan ini harus bayar berapa?", "this_month", [income("this_month")]);
+reportCase("kirimin laporan pdf bulan lalu dong", "last_month", "pdf");
+
 // --- not available yet ---------------------------------------------------------------------
 for (const text of [
-  "pajak bulan ini harus bayar berapa?",
-  "kirimin laporan pdf bulan lalu dong",
   "stok ayam tinggal berapa kilo?",
   "bikinin invoice buat bu sari bisa?",
 ]) {
@@ -299,6 +319,12 @@ for (const [text, target, action, extra] of CORRECTIONS) {
     tags: ["correction", action],
   });
 }
+
+// Added in milestone 6, after the original cases so earlier ids stay stable.
+taxCase("omzet bulan lalu kena pajak berapa?", "last_month", [income("last_month")]);
+taxCase("kenapa pajakku bulan ini nol? omzetnya kan ada", "this_month", [income("this_month")]);
+reportCase("minta laporan bulan ini versi excel buat akuntanku", "this_month", "xlsx");
+reportCase("export laporan keuangan bulan kemarin ke pdf", "last_month", "pdf");
 
 const out = fileURLToPath(new URL("../datasets/questions.jsonl", import.meta.url));
 writeFileSync(out, cases.map((c) => JSON.stringify(c)).join("\n") + "\n");

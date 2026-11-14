@@ -112,7 +112,7 @@ export function regressions(current: Summary, baseline: Summary, maxDrop = 2): s
 // --- questions (F7) and corrections (Flow D) ---------------------------------------
 
 /** Question-set metrics: answers quote the right amounts, corrections target the right entry. */
-export const QUESTION_FIELDS = ["answer", "unsupported", "reminder", "correction_target", "correction_change"] as const;
+export const QUESTION_FIELDS = ["answer", "unsupported", "reminder", "report", "correction_target", "correction_change"] as const;
 
 /** "Rp 1.250.000", "Rp1.250.000" and "1.250.000" all count as quoting Rp 1.250.000. */
 export function quotesAmount(answer: string, amount: string): boolean {
@@ -125,6 +125,7 @@ export type QuestionOutcome =
   | { kind: "answer"; text: string }
   | { kind: "proposal"; journalId: string; action: string; amountIdr?: string; paymentCode?: string }
   | { kind: "reminder"; contactName: string; text: string }
+  | { kind: "report"; month: string; format: string }
   | { kind: "not_routed"; intent: string };
 
 /**
@@ -144,6 +145,8 @@ export function scoreQuestionCase(c: QuestionCase, out: QuestionOutcome, journal
       reminder:
         out.kind === "reminder" && sameCounterparty(e.reminder_contact ?? null, out.contactName) && (e.must_include ?? []).every((a) => quotesAmount(out.text, a)),
     };
+  } else if (e.kind === "report") {
+    fields = { report: out.kind === "report" && out.month === e.report?.month && out.format === e.report?.format };
   } else if (e.kind === "unsupported") {
     fields = { unsupported: out.kind === "answer" && !/rp\s?\d/i.test(out.text) };
   } else {

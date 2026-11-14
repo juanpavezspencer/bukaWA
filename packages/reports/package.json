@@ -1,0 +1,27 @@
+{
+  "name": "@bukuwa/reports",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@bukuwa/db": "workspace:*",
+    "@bukuwa/idn": "workspace:*",
+    "@bukuwa/ledger": "workspace:*",
+    "@bukuwa/tax": "workspace:*",
+    "@react-pdf/renderer": "4.3.0",
+    "drizzle-orm": "^0.44.0",
+    "exceljs": "4.4.0",
+    "react": "19.1.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.0",
+    "@types/react": "19.1.0"
+  }
+}

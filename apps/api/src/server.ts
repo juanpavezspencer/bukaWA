@@ -3,7 +3,8 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import PgBoss from "pg-boss";
 import * as schema from "@bukuwa/db";
-import type { Db } from "@bukuwa/db";
+import { fsMediaStore, type Db } from "@bukuwa/db";
+import { linkKeyFromBase64 } from "@bukuwa/reports";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { INBOUND_QUEUE, pgBossQueue } from "./queue.js";
@@ -17,7 +18,12 @@ boss.on("error", (err) => console.error(JSON.stringify({ level: "error", event: 
 await boss.start();
 await boss.createQueue(INBOUND_QUEUE);
 
-const app = createApp({ db, queue: pgBossQueue(boss), config });
+const app = createApp({
+  db,
+  queue: pgBossQueue(boss),
+  config,
+  files: { key: linkKeyFromBase64(config.REPORT_LINK_KEY), store: fsMediaStore(config.MEDIA_DIR) },
+});
 serve({ fetch: app.fetch, port: config.PORT }, (info) => {
   console.log(JSON.stringify({ level: "info", event: "api.listening", port: info.port }));
 });

@@ -19,6 +19,8 @@
     "@bukuwa/db": "workspace:*",
     "@bukuwa/idn": "workspace:*",
     "@bukuwa/ledger": "workspace:*",
+    "@bukuwa/reports": "workspace:*",
+    "@bukuwa/tax": "workspace:*",
     "@bukuwa/wa": "workspace:*",
     "drizzle-orm": "^0.44.0",
     "pg": "^8.13.0",

@@ -3,14 +3,20 @@ export type OutboundMessage =
   | { kind: "text"; body: string }
   | { kind: "buttons"; body: string; buttons: Array<{ id: string; title: string }> }
   | { kind: "list"; body: string; buttonText: string; rows: Array<{ id: string; title: string; description?: string }> }
-  /** A pre-approved template: the only kind allowed outside the 24-hour window (scheduled summaries). */
-  | { kind: "template"; name: string; language: string; params: string[] };
+  /**
+   * A pre-approved template: the only kind allowed outside the 24-hour window
+   * (scheduled summaries, the month-end tax notice). buttonPayloads: one per
+   * approved quick-reply button, delivered back as the reply id when tapped.
+   */
+  | { kind: "template"; name: string; language: string; params: string[]; buttonPayloads?: string[] };
 
 export interface TemplateDef {
   name: string;
   language: string;
   /** The body exactly as submitted to Meta for approval; {{n}} are the params. */
   body: string;
+  /** Quick-reply button titles, as submitted for approval. */
+  quickReplies?: string[];
 }
 
 /**
@@ -34,7 +40,32 @@ export const SUMMARY_TEMPLATE: TemplateDef = {
   ].join("\n"),
 };
 
-export const TEMPLATES: Record<string, TemplateDef> = { [SUMMARY_TEMPLATE.name]: SUMMARY_TEMPLATE };
+/**
+ * Flow E month-end tax notice, sent on the 1st for last month. Submit to Meta
+ * (category: utility) with one quick-reply button before enabling it.
+ */
+export const TAX_NOTICE_TEMPLATE: TemplateDef = {
+  name: "pajak_bulanan",
+  language: "id",
+  body: [
+    "Perkiraan pajak {{1}} untuk {{2}} 🧾",
+    "",
+    "💰 Omzet bulan itu: {{3}}",
+    "📅 Omzet sejak Januari: {{4}}",
+    "🧮 Perkiraan PPh final: {{5}}",
+    "⏰ Batas bayar: {{6}}",
+    "",
+    "{{7}}",
+    "",
+    "Ini perkiraan, bukan nasihat pajak. Bayar dan lapor tetap kamu yang lakukan ya. Kalau sudah bayar, kirim foto bukti bayarnya ke sini.",
+  ].join("\n"),
+  quickReplies: ["Lihat laporan"],
+};
+
+export const TEMPLATES: Record<string, TemplateDef> = {
+  [SUMMARY_TEMPLATE.name]: SUMMARY_TEMPLATE,
+  [TAX_NOTICE_TEMPLATE.name]: TAX_NOTICE_TEMPLATE,
+};
 
 const paramCount = (t: TemplateDef) => new Set(t.body.match(/\{\{\d+\}\}/g) ?? []).size;
 
@@ -95,13 +126,20 @@ export function toCloudApiPayload(to: string, msg: OutboundMessage): Record<stri
         check(!/[\n\t]| {5,}/.test(p), "template parameter has a newline, tab or 5+ spaces");
         check(p.length <= 1024, "template parameter too long");
       }
+      const buttons = t!.quickReplies ?? [];
+      const payloads = msg.buttonPayloads ?? [];
+      check(payloads.length === buttons.length, `${msg.name} takes ${buttons.length} button payload(s)`);
+      for (const p of payloads) check(p.length > 0 && p.length <= 256, "button payload length");
       return {
         ...base,
         type: "template",
         template: {
           name: msg.name,
           language: { code: msg.language },
-          components: [{ type: "body", parameters: msg.params.map((text) => ({ type: "text", text })) }],
+          components: [
+            { type: "body", parameters: msg.params.map((text) => ({ type: "text", text })) },
+            ...payloads.map((payload, i) => ({ type: "button", sub_type: "quick_reply", index: String(i), parameters: [{ type: "payload", payload }] })),
+          ],
         },
       };
     }
@@ -116,7 +154,10 @@ export function messageText(msg: OutboundMessage): string {
 /** Plain-text rendering for the messages log. */
 export function messageLogBody(msg: OutboundMessage): string {
   if (msg.kind === "text") return msg.body;
-  if (msg.kind === "template") return `[template ${msg.name}]\n${renderTemplate(msg)}`;
+  if (msg.kind === "template") {
+    const buttons = TEMPLATES[msg.name]?.quickReplies ?? [];
+    return `[template ${msg.name}]\n${renderTemplate(msg)}${buttons.length ? `\n[${buttons.join(" | ")}]` : ""}`;
+  }
   const opts = msg.kind === "buttons" ? msg.buttons : msg.rows;
   return `${msg.body}\n[${opts.map((o) => o.title).join(" | ")}]`;
 }
