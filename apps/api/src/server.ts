@@ -44,6 +44,8 @@ const app = createApp({
     sessionHours: config.ADMIN_SESSION_HOURS,
     cookieSecure: config.COOKIE_SECURE,
     reviewConfidenceBelow: config.REVIEW_CONFIDENCE_BELOW,
+    pilotTargets: { retentionWeek: config.PILOT_RETENTION_WEEK, retentionMinTx: config.PILOT_RETENTION_MIN_TX, activeMinTx: 1 },
+    costTargetIdr: BigInt(config.COST_TARGET_MONTHLY_IDR),
   },
 });
 serve({ fetch: app.fetch, port: config.PORT }, (info) => {

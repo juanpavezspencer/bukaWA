@@ -23,6 +23,8 @@ export interface NewBusiness {
   trialDays: number;
   timezone: string;
   now: Date;
+  /** Pilot invite used to join (already counted). */
+  invite?: { code: string; cohort: string };
 }
 
 /** Calendar date (YYYY-MM-DD) of `at` in `timeZone`. */
@@ -54,6 +56,8 @@ export async function createBusinessFromOnboarding(
     timezone: b.timezone,
     plan: "trial",
     trialEndsAt: new Date(b.now.getTime() + b.trialDays * 86_400_000),
+    cohort: b.invite?.cohort ?? null,
+    inviteCode: b.invite?.code ?? null,
   });
   await tx.insert(users).values({
     id: userId,
@@ -81,7 +85,7 @@ export async function createBusinessFromOnboarding(
       action: "business.create",
       entity: "business",
       entityId: businessId,
-      after: { name: b.name, type: b.type, openingCash: b.openingCash.toString() },
+      after: { name: b.name, type: b.type, openingCash: b.openingCash.toString(), ...(b.invite ? { cohort: b.invite.cohort, inviteCode: b.invite.code } : {}) },
     },
   ]);
 

@@ -16,6 +16,8 @@ import {
   summarySchedules,
   taxNoticeSchedules,
   taxProfiles,
+  usageEvents,
+  erasureRequests,
   contacts,
   journalLines,
   journals,
@@ -30,72 +32,18 @@ import {
   type Db,
   type Tx,
 } from "../src/index.js";
-import { createTestBusiness, createTestDb, expectPgError } from "../src/testing.js";
+import { accountId, createTestBusiness, createTestDb, expectPgError, populateEveryTenantTable } from "../src/testing.js";
 
 let db: Db;
 let bizA: string;
 let bizB: string;
 
-async function accountId(tx: Tx, businessId: string, code: string): Promise<string> {
-  const [row] = await tx
-    .select({ id: accounts.id })
-    .from(accounts)
-    .where(and(eq(accounts.businessId, businessId), eq(accounts.code, code)));
-  if (!row) throw new Error(`account ${code} not found`);
-  return row.id;
-}
-
-/** Put one row in every tenant table for the given business. */
-async function populate(businessId: string): Promise<void> {
-  await withBusiness(db, businessId, async (tx) => {
-    await tx.insert(users).values({
-      businessId,
-      phoneHash: `user-${businessId}`,
-      phoneEnc: Buffer.from("x"),
-    });
-    const [contact] = await tx
-      .insert(contacts)
-      .values({ businessId, name: "Bu Sari", kind: "customer" })
-      .returning();
-    const [journal] = await tx
-      .insert(journals)
-      .values({ businessId, date: "2026-11-12", description: "seed", source: "manual" })
-      .returning();
-    await tx.insert(journalLines).values([
-      { businessId, journalId: journal!.id, lineNo: 1, accountId: await accountId(tx, businessId, "1100"), debit: 1000n, contactId: contact!.id },
-      { businessId, journalId: journal!.id, lineNo: 2, accountId: await accountId(tx, businessId, "4100"), credit: 1000n },
-    ]);
-    await tx.insert(captures).values({ businessId, source: "text", rawText: "jual 1rb", journalId: journal!.id });
-    await tx.insert(messages).values({ businessId, direction: "inbound", type: "text", body: "halo" });
-    await tx.insert(auditLog).values({ businessId, actor: "test", action: "create", entity: "journal" });
-    await tx.insert(categoryRules).values({ businessId, pattern: "ayam", kind: "expense", accountId: await accountId(tx, businessId, "5100") });
-    await tx.insert(summarySchedules).values({ businessId, frequency: "daily", localTime: "21:00", nextRunAt: new Date("2026-11-12T14:00:00Z") });
-    await tx.insert(reports).values({
-      businessId,
-      kind: "monthly",
-      format: "pdf",
-      periodFrom: "2026-10-01",
-      periodTo: "2026-10-31",
-      fileName: "laporan.pdf",
-      mimeType: "application/pdf",
-      content: Buffer.from("%PDF-"),
-    });
-    await tx.insert(taxNoticeSchedules).values({ businessId, nextRunAt: new Date("2026-12-01T01:00:00Z") });
-    const [user] = await tx.select({ id: users.id }).from(users);
-    await tx.insert(loginTokens).values({ businessId, userId: user!.id, tokenHash: `t-${businessId}`, expiresAt: new Date("2026-11-13T00:15:00Z") });
-    await tx.insert(dashboardSessions).values({ businessId, userId: user!.id, sessionHash: `s-${businessId}`, expiresAt: new Date("2026-11-20T00:00:00Z") });
-  });
-  // Reviews are written by the admin console role only.
-  const [cap] = await withBusiness(db, businessId, (tx) => tx.select({ id: captures.id }).from(captures));
-  await withAdmin(db, (tx) => tx.insert(captureReviews).values({ businessId, captureId: cap!.id, verdict: "correct", reviewer: "admin" }));
-}
-
 beforeAll(async () => {
   ({ db } = await createTestDb());
   bizA = await createTestBusiness(db, "Catering Rina");
   bizB = await createTestBusiness(db, "Toko Dimas");
-  await populate(bizA);
-  await populate(bizB);
+  await populateEveryTenantTable(db, bizA);
+  await populateEveryTenantTable(db, bizB);
 });
 
 function tenantColumn(table: string): string {

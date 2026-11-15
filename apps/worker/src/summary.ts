@@ -114,7 +114,10 @@ export async function handleSummaryRequest(
  * a summary goes out at most once per period even with overlapping ticks.
  */
 export async function runDueSummaries(
-  deps: Pick<InboundDeps, "db" | "sender" | "keys" | "log">,
+  deps: Pick<InboundDeps, "db" | "sender" | "keys" | "log"> & {
+    /** Meta's per-message price for a utility template, logged on messages.cost_idr (config). */
+    waTemplateCostIdr?: bigint;
+  },
   now: Date,
 ): Promise<{ sent: number; skipped: number }> {
   const log = deps.log ?? ((e: Record<string, unknown>) => console.log(JSON.stringify(e)));
@@ -147,7 +150,7 @@ export async function runDueSummaries(
         language: SUMMARY_TEMPLATE.language,
         params: await summaryParams(tx, businessId, b!.name, period),
       };
-      await tx.insert(messages).values({ businessId, direction: "outbound", type: "template", body: messageLogBody(msg), templateName: msg.name });
+      await tx.insert(messages).values({ businessId, direction: "outbound", type: "template", body: messageLogBody(msg), templateName: msg.name, costIdr: deps.waTemplateCostIdr ?? null });
       return { msg, phone: decryptPii(deps.keys, b!.ownerPhoneEnc), period: period.key };
     });
     if (!out) continue;

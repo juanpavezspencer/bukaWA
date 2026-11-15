@@ -29,6 +29,7 @@ export function LoginHint() {
         Buka chat BukuWA di WhatsApp lalu ketik <b className="text-ink">dashboard</b>. Kamu akan dapat link masuk yang berlaku 15 menit.
       </p>
       <p className="mt-3 text-sm text-ink-3">Nggak perlu password. Sesi di browser ini berlaku 7 hari.</p>
+      <p className="mt-6 text-sm"><a className="text-ink-2 underline underline-offset-2" href="/privasi">Kebijakan privasi</a></p>
     </div>
   );
 }

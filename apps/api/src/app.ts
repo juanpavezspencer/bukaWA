@@ -33,7 +33,7 @@ export function createApp({ db, queue, config, files, dashboard, admin, now = ()
 
   if (files) app.route("/", fileRoutes({ db, ...files, now, log }));
   // Admin first: the dashboard's session check would otherwise claim /api/admin/*.
-  if (admin) app.route("/api/admin", adminRoutes({ db, cfg: admin, now }));
+  if (admin) app.route("/api/admin", adminRoutes({ db, cfg: admin, now, log }));
   if (dashboard) app.route("/api", dashboardRoutes({ db, cfg: dashboard, now, log }));
 
   // Meta subscription handshake.

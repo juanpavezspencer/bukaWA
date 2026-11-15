@@ -1,9 +1,12 @@
-import { aiConfigFromEnv, ROUTER_SYSTEM, VISION_SYSTEM, type RawEntry, type StructuredModel } from "@bukuwa/ai";
+import { aiConfigFromEnv, recordUsage, ROUTER_SYSTEM, VISION_SYSTEM, type RawEntry, type StructuredModel } from "@bukuwa/ai";
 
 export interface Script {
   intent: string;
   entries?: Array<Partial<RawEntry>>;
 }
+
+/** What the real adapter would report for each call (kept small and round for cost assertions). */
+export const FAKE_USAGE = { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
 const sure = { kind: 0.95, amount: 0.95, date: 0.95, counterparty: 0.95, payment_method: 0.95 };
 
@@ -40,6 +43,7 @@ export class ScriptedModel implements StructuredModel {
     if (req.system === VISION_SYSTEM) {
       if (!this.vision) throw new Error("no vision script");
       const v = this.vision;
+      recordUsage("claude-sonnet-5-5", FAKE_USAGE);
       return {
         output: req.schema.parse({ ...v, entries: v.entries.map(fill), needs_clarification: [] }),
         model: "claude-sonnet-5-5",
@@ -55,6 +59,7 @@ export class ScriptedModel implements StructuredModel {
             entries: (script.entries ?? []).map(fill),
             needs_clarification: [],
           };
+    recordUsage("claude-haiku-5-5", FAKE_USAGE);
     return { output: req.schema.parse(output), model: "claude-haiku-5-5" };
   }
 }

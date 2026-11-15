@@ -13,7 +13,7 @@ import { createTestDb } from "@bukuwa/db/testing";
 import { trialBalance } from "@bukuwa/ledger";
 import { messageLogBody, renderTemplate, TEMPLATES, type MediaFetcher, type OutboundMessage, type WaSender } from "@bukuwa/wa";
 import { linkSigner, openSignedFile, type LinkKind } from "@bukuwa/reports";
-import { aiConfigFromEnv, anthropicChatModel, anthropicModel } from "@bukuwa/ai";
+import { aiConfigFromEnv, pricingFromEnv, anthropicChatModel, anthropicModel } from "@bukuwa/ai";
 import { processInbound, type InboundDeps } from "../src/inbound.js";
 import { memoryMediaStore } from "../src/media/store.js";
 import { runDueSummaries } from "../src/summary.js";
@@ -93,7 +93,12 @@ async function reset() {
       adminLoginTtlMinutes: 10,
       adminPhoneHashes: new Set(adminPhones.map((p) => hashPii(keys, toE164(p)))),
     },
-    config: { privacyPolicyUrl: "https://bukuwa.id/privasi", consentVersion: "dev", trialDays: 14, timezone: "Asia/Jakarta" },
+    config: { privacyPolicyUrl: `${WEB_ORIGIN}/privasi`, consentVersion: "dev", trialDays: 14, timezone: "Asia/Jakarta" },
+    metering: { pricing: pricingFromEnv(), monthlyAlertIdr: 3000n },
+    limits: { dailyInbound: Number(process.env.DAILY_INBOUND_LIMIT ?? 300) },
+    // DEV_PILOT_INVITES=true to try invite codes (create them in /admin/pilot).
+    pilot: { inviteRequired: process.env.DEV_PILOT_INVITES === "true" },
+    privacy: { links: tax.links, reportLinkTtlMinutes: 15, graceDays: 7 },
     log: (e) => console.log(JSON.stringify(e)),
   };
 }

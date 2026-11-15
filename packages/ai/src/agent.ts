@@ -3,6 +3,8 @@ import { z } from "zod/v4";
 import { maskSensitiveIds } from "@bukuwa/idn";
 import type { Effort } from "./config.js";
 import { unsupportedNumbers } from "./guard.js";
+import { usageOf } from "./model.js";
+import { recordUsage } from "./metering.js";
 
 /*
  * Tool-calling loop for questions and corrections (F7, Flow D). Tools are
@@ -55,6 +57,7 @@ export function anthropicChatModel(client: Anthropic = new Anthropic()): ChatMod
         tools: req.tools,
         messages: req.messages,
       });
+      recordUsage(r.model, usageOf(r.usage));
       return { content: r.content, stopReason: r.stop_reason, model: r.model };
     },
   };

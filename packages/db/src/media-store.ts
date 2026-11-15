@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 
 /**
@@ -12,7 +12,11 @@ import { dirname, resolve, sep } from "node:path";
 export interface MediaStore {
   put(key: string, bytes: Uint8Array, mimeType: string): Promise<string>;
   get(uri: string): Promise<{ bytes: Uint8Array; mimeType: string }>;
+  /** Delete every object of one business (erasure). Idempotent. */
+  removeBusiness(businessId: string): Promise<void>;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const EXT: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -57,6 +61,10 @@ export function fsMediaStore(root: string): MediaStore {
       const p = pathFor(uri.slice("file://".length).slice(base.length + 1));
       return { bytes: new Uint8Array(await readFile(p)), mimeType: mimeOf(p) };
     },
+    async removeBusiness(businessId) {
+      if (!UUID_RE.test(businessId)) throw new Error(`invalid business id: ${businessId}`);
+      await rm(pathFor(businessId), { recursive: true, force: true });
+    },
   };
 }
 
@@ -73,6 +81,9 @@ export function memoryMediaStore(): MediaStore & { objects: Map<string, { bytes:
       const o = objects.get(uri.replace(/^mem:\/\//, ""));
       if (!o) throw new Error(`no media at ${uri}`);
       return o;
+    },
+    async removeBusiness(businessId) {
+      for (const k of [...objects.keys()]) if (k.startsWith(`${businessId}/`)) objects.delete(k);
     },
   };
 }

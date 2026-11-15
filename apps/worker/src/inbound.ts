@@ -1,7 +1,10 @@
 import { eq } from "drizzle-orm";
 import {
   businesses,
+  consumeInvite,
+  findUsableInvite,
   findUserByPhoneHash,
+  normalizeInviteCode,
   hashPii,
   messages,
   onboardingSessions,
@@ -29,6 +32,7 @@ import {
   type StructuredModel,
   noSpeechToText,
   SttUnavailableError,
+  withUsageMeter,
 } from "@bukuwa/ai";
 import { parsePaymentMethod, parseRupiah, parseSummaryRequest, parseTaxRequest, type SummaryRequest, type TaxRequest } from "@bukuwa/idn";
 import type { ReportFormat } from "@bukuwa/reports";
@@ -62,10 +66,12 @@ import {
   createCapture,
   findPendingCapture,
 } from "./capture/flow.js";
-import { onboardingStep, type OnboardingState } from "./onboarding.js";
+import { MAX_INVITE_ATTEMPTS, onboardingStep, wantsInviteCode, type OnboardingState } from "./onboarding.js";
 import { handleSummaryRequest } from "./summary.js";
 import { adminLink, dashboardLink, isAdminRequest, isDashboardRequest, type DashboardDeps } from "./dashboard.js";
 import { ensureTaxNoticeSchedule, handleTaxRequest, parseReportReply, reportReply, type TaxDeps } from "./tax.js";
+import { inboundToday, recordUsage, type LimitDeps, type MeteringDeps } from "./usage.js";
+import { handlePrivacyReply, handlePrivacyRequest, parsePrivacyReply, parsePrivacyRequest, type PrivacyDeps, type PrivacyRequest } from "./privacy.js";
 
 export interface InboundDeps {
   db: Db;
@@ -79,6 +85,14 @@ export interface InboundDeps {
   /** Magic-link login to the web dashboard and admin console. */
   dashboard?: DashboardDeps;
   config: { privacyPolicyUrl: string; consentVersion: string; trialDays: number; timezone: string };
+  /** Per-business model cost (usage_events); without it calls are not recorded. */
+  metering?: MeteringDeps;
+  /** Daily message cap per business; without it there is no cap. */
+  limits?: LimitDeps;
+  /** "ekspor data" / "hapus data" (UU PDP); without it they get a "contact us" reply. */
+  privacy?: PrivacyDeps;
+  /** Pilot gating: new numbers need an invite code (pilot_invites). */
+  pilot?: { inviteRequired: boolean };
   now?: () => Date;
   log?: (event: Record<string, unknown>) => void;
 }
@@ -98,6 +112,10 @@ const REPLIES: Record<Exclude<Intent, "transaction">, string> = {
   unsupported: `Maaf, aku belum ngerti maksudnya. ${EXAMPLES}`,
 };
 
+const PRIVACY_NOT_YET: OutboundMessage = {
+  kind: "text",
+  body: "Untuk ekspor atau hapus data, balas pesan ini dengan permintaanmu ya, tim BukuWA akan bantu langsung. 🙏",
+};
 const TAX_NOT_YET: OutboundMessage = { kind: "text", body: "Perkiraan pajak dan laporan bulanan segera hadir ya. 🙏" };
 const NOT_UNDERSTOOD: OutboundMessage = { kind: "text", body: REPLIES.unsupported };
 const MEDIA_NOT_YET: OutboundMessage = {
@@ -120,6 +138,12 @@ const NOT_A_DOCUMENT: OutboundMessage = {
   kind: "text",
   body: "Aku nggak nemu transaksi di gambar ini. Kirim foto nota, struk atau bukti transfer ya, atau ketik aja transaksinya.",
 };
+const dailyCapReached = (limit: number): OutboundMessage => ({
+  kind: "text",
+  body:
+    `Hari ini udah ${limit} pesan, banyak banget! 😅 Biar aman, aku istirahat dulu sampai besok ya. ` +
+    "Semua transaksi yang udah tercatat tetap aman. Tombol di kartu konfirmasi masih bisa dipakai.",
+});
 const NOT_HEARD: OutboundMessage = {
   kind: "text",
   body: "Maaf, voice note-nya kurang jelas. Coba ulangi pelan-pelan, atau ketik aja transaksinya.",
@@ -142,6 +166,8 @@ type Plan =
   | { kind: "summary"; request: SummaryRequest }
   | { kind: "tax"; request: TaxRequest }
   | { kind: "login" }
+  | { kind: "privacy"; request: PrivacyRequest }
+  | { kind: "privacy_reply"; reply: "erase_yes" | "erase_no" }
   | { kind: "admin_login" }
   | { kind: "report"; month: string; format: ReportFormat }
   | { kind: "correction"; proposal: CorrectionProposal; summary: JournalSummary; modelVersion: string; text: string }
@@ -311,6 +337,22 @@ async function plan(deps: InboundDeps, s: Sender, waMessageId: string, today: st
   if (parseCaptureReply(s.input.replyId)) return { kind: "capture_action" };
   const reportTap = parseReportReply(s.input.replyId);
   if (reportTap) return deps.tax ? { kind: "report", ...reportTap } : { kind: "reply", replies: [TAX_NOT_YET] };
+  const privacyTap = parsePrivacyReply(s.input.replyId);
+  if (privacyTap) return deps.privacy ? { kind: "privacy_reply", reply: privacyTap } : { kind: "reply", replies: [PRIVACY_NOT_YET] };
+  // Data rights need no model and must work even over the daily cap.
+  const privacyRequest = s.input.replyId ? null : parsePrivacyRequest(s.input.text ?? "");
+  if (privacyRequest) return deps.privacy ? { kind: "privacy", request: privacyRequest } : { kind: "reply", replies: [PRIVACY_NOT_YET] };
+  if (deps.limits) {
+    // Button taps above need no model; everything below may.
+    const n = await withAppRole(deps.db, async (tx) => {
+      await setBusinessScope(tx, s.user!.businessId);
+      return inboundToday(tx, s.user!.businessId, (deps.now ?? (() => new Date()))(), s.timezone);
+    });
+    if (n >= deps.limits.dailyInbound) {
+      log({ level: "warn", event: "inbound.daily_cap", waMessageId, businessId: s.user.businessId, count: n });
+      return { kind: "reply", replies: n === deps.limits.dailyInbound ? [dailyCapReached(n)] : [] };
+    }
+  }
   try {
     if (s.media) return await planMedia(deps, s, s.media, waMessageId, today, log);
   } catch (err) {
@@ -371,9 +413,31 @@ async function runOnboarding(tx: Tx, deps: InboundDeps, s: Sender, now: () => Da
     .from(onboardingSessions)
     .where(eq(onboardingSessions.phoneHash, s.phoneHash))
     .for("update");
-  const state = { ...(session!.data as object), step: session!.step } as OnboardingState;
-  const result = onboardingStep(state, s.input, { privacyPolicyUrl: deps.config.privacyPolicyUrl, now });
+  let state = { ...(session!.data as object), step: session!.step } as OnboardingState;
+  const inviteRequired = deps.pilot?.inviteRequired ?? false;
+  // Too many wrong codes locks the number for a day, then it may try again.
+  if (state.step === "awaiting_invite" && (state.inviteAttempts ?? 0) >= MAX_INVITE_ATTEMPTS && now().getTime() - session!.updatedAt.getTime() > 86_400_000) {
+    state = { step: "new" };
+  }
+  const code = wantsInviteCode(state, inviteRequired) && !s.input.replyId ? normalizeInviteCode(s.input.text ?? "") : null;
+  const found = code ? await findUsableInvite(tx, code, now()) : null;
+  const result = onboardingStep(state, s.input, { privacyPolicyUrl: deps.config.privacyPolicyUrl, invite: { required: inviteRequired, found }, now });
   let businessId: string | undefined;
+
+  let invite: { code: string; cohort: string } | undefined;
+  if (result.complete?.inviteCode) {
+    // Counted only when the business is created; a code can run out meanwhile.
+    const used = await consumeInvite(tx, result.complete.inviteCode, now());
+    if (!used) {
+      await tx.update(onboardingSessions).set({ step: "awaiting_invite", data: { inviteAttempts: 0 }, updatedAt: now() }).where(eq(onboardingSessions.phoneHash, s.phoneHash));
+      return {
+        replies: [{ kind: "text" as const, body: "Yah, kuota kode undangannya baru aja habis. 🙏 Minta kode baru ke tim BukuWA, lalu kirim ke sini ya. Data yang tadi kamu isi belum disimpan." }],
+        businessId: undefined,
+        event: "onboarding.invite_exhausted",
+      };
+    }
+    invite = { code: used.code, cohort: used.cohort };
+  }
 
   if (result.complete) {
     ({ businessId } = await createBusinessFromOnboarding(tx, deps.keys, {
@@ -387,6 +451,7 @@ async function runOnboarding(tx: Tx, deps: InboundDeps, s: Sender, now: () => Da
       trialDays: deps.config.trialDays,
       timezone: deps.config.timezone,
       now: now(),
+      invite,
     }));
     await tx.delete(onboardingSessions).where(eq(onboardingSessions.phoneHash, s.phoneHash));
     if (deps.tax) await ensureTaxNoticeSchedule(tx, businessId, deps.config.timezone, now(), deps.tax.noticeLocalTime);
@@ -415,7 +480,7 @@ export async function processInbound(deps: InboundDeps, waMessageId: string): Pr
     return;
   }
   const today = localDate(now(), sender.timezone);
-  const p = await plan(deps, sender, waMessageId, today, log);
+  const { result: p, calls } = await withUsageMeter(() => plan(deps, sender, waMessageId, today, log));
 
   const outcome = await withAppRole(deps.db, async (tx) => {
     const [row] = await tx.select().from(waInbound).where(eq(waInbound.waMessageId, waMessageId)).for("update");
@@ -452,6 +517,14 @@ export async function processInbound(deps: InboundDeps, waMessageId: string): Pr
             { businessId: ctx.businessId, businessName: sender.businessName ?? "usahamu", today, timezone: sender.timezone, now: now() },
             p.request,
           );
+          break;
+        case "privacy":
+          replies = await handlePrivacyRequest(tx, deps.keys, deps.privacy!, { ...ctx, now: now(), timezone: sender.timezone }, p.request);
+          event = `privacy.${p.request}`;
+          break;
+        case "privacy_reply":
+          replies = await handlePrivacyReply(tx, deps.keys, deps.privacy!, { ...ctx, now: now(), timezone: sender.timezone }, p.reply);
+          event = `privacy.${p.reply}`;
           break;
         case "login":
           replies = await dashboardLink(tx, deps.dashboard!, { businessId: ctx.businessId, userId: ctx.userId, now: now() });
@@ -514,14 +587,19 @@ export async function processInbound(deps: InboundDeps, waMessageId: string): Pr
           waMessageId,
           type: row.type,
           body: sender.input.text ?? sender.media?.caption ?? (p.kind === "new_capture" ? p.transcript ?? null : null),
+          createdAt: now(),
         },
         ...replies.map((r) => ({
           businessId: businessId!,
           direction: "outbound" as const,
           type: r.kind,
           body: messageLogBody(r),
+          createdAt: now(),
         })),
       ]);
+    }
+    if (businessId && deps.metering) {
+      await recordUsage(tx, deps.metering, { businessId, waMessageId, now: now(), timezone: sender.timezone }, calls, log);
     }
     await tx.update(waInbound).set({ processedAt: now() }).where(eq(waInbound.waMessageId, waMessageId));
     return { replies, event, businessId };
