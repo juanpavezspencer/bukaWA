@@ -36,6 +36,20 @@ const EnvSchema = z.object({
   ADMIN_LOGIN_TTL_MINUTES: z.coerce.number().int().positive().default(10),
   /** Comma-separated staff numbers (E.164) allowed into the admin console. */
   ADMIN_PHONES: z.string().default(""),
+  /** Milestone 8: model prices are read by pricingFromEnv (AI_PRICES_JSON, IDR_PER_USD). */
+  /** Warn (log event cost.over_budget) when a business's month-to-date model cost passes this. Spec target: Rp 3.000. */
+  COST_ALERT_MONTHLY_IDR: z.coerce.number().int().positive().default(3000),
+  /** Meta's price for one utility template message in Indonesia (rupiah); unset = not recorded. */
+  WA_TEMPLATE_COST_IDR: z.coerce.number().int().nonnegative().optional(),
+  /** Inbound messages per business per day that get model calls; protects against loops. */
+  DAILY_INBOUND_LIMIT: z.coerce.number().int().positive().default(300),
+  /** Pilot: new numbers must send an invite code before onboarding. */
+  PILOT_INVITE_REQUIRED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  /** "hapus data": days between the owner's confirmation and the erasure (they can cancel meanwhile). */
+  ERASURE_GRACE_DAYS: z.coerce.number().int().min(0).max(30).default(7),
 });
 
 export type WorkerConfig = z.infer<typeof EnvSchema>;

@@ -12,7 +12,8 @@
     "start": "tsx src/main.ts",
     "test": "vitest run",
     "typecheck": "tsc -p .",
-    "dev:chat": "tsx dev/chat.ts"
+    "dev:chat": "tsx dev/chat.ts",
+    "load": "tsx dev/load.ts"
   },
   "dependencies": {
     "@bukuwa/ai": "workspace:*",
@@ -32,6 +33,7 @@
     "@electric-sql/pglite": "^0.3.0",
     "@hono/node-server": "^1.19.19",
     "@types/pg": "^8.11.0",
+    "exceljs": "4.4.0",
     "hono": "^4.13.18"
   }
 }

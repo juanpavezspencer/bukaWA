@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { captures, createAdminLoginToken, createLoginToken, messages, users, withAppRole, withBusiness, type Db } from "@bukuwa/db";
+import { sql } from "drizzle-orm";
+import { captures, createAdminLoginToken, createLoginToken, messages, usageEvents, users, waInbound, withAppRole, withBusiness, type Db } from "@bukuwa/db";
 import { createTestBusiness, createTestDb } from "@bukuwa/db/testing";
 import { postJournal, type DraftLine } from "@bukuwa/ledger";
 import { linkSigner } from "@bukuwa/reports";
@@ -250,6 +251,61 @@ describe("admin console", () => {
     expect(r.status).toBe(201);
     const after = await (await req(adm, "/api/admin/review")).json();
     expect(after.items.some((i: { id: string }) => i.id === failedCapture)).toBe(false);
+  });
+});
+
+describe("admin pilot console", () => {
+  let adm: string;
+  beforeAll(async () => {
+    const token = await withAppRole(db, (tx) => createAdminLoginToken(tx, { phoneHash: "staff-hash-0002", now: NOW, ttlMs: 600_000 }));
+    const res = await app().request("/api/admin/auth/exchange", { method: "POST", headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify({ token }) });
+    adm = `bw_admin=${/bw_admin=([^;]+)/.exec(res.headers.get("set-cookie")!)![1]}`;
+    await withBusiness(db, bizA, (tx) =>
+      tx.insert(usageEvents).values({ businessId: bizA, kind: "llm", model: "claude-haiku-5-5", inputTokens: 1000, outputTokens: 100, costMicroIdr: 2_400_000n, createdAt: new Date("2026-11-12T00:00:00Z") }),
+    );
+    await db.insert(waInbound).values([
+      { waMessageId: "wamid.t1", fromPhone: "62811", type: "text", payload: {}, receivedAt: new Date("2026-11-12T00:00:00Z"), processedAt: new Date("2026-11-12T00:00:02Z") },
+      { waMessageId: "wamid.p1", fromPhone: "62811", type: "image", payload: {}, receivedAt: new Date("2026-11-12T00:00:00Z"), processedAt: new Date("2026-11-12T00:00:09Z") },
+    ]);
+  });
+
+  it("creates invite codes that only staff can make", async () => {
+    const res = await req(adm, "/api/admin/invites", { method: "POST", body: JSON.stringify({ cohort: "bandung-fnb", maxUses: 20, expiresInDays: 30 }) });
+    expect(res.status).toBe(201);
+    const { invite } = await res.json();
+    expect(invite.code).toMatch(/^[A-HJKMNP-Z2-9]{6}$/);
+    expect(invite).toMatchObject({ cohort: "bandung-fnb", maxUses: 20, uses: 0 });
+    expect(invite.createdBy).toBeUndefined();
+    const list = await (await req(adm, "/api/admin/invites")).json();
+    expect(list.invites.map((i: { code: string }) => i.code)).toContain(invite.code);
+
+    const owner = `bw_session=${await login(bizA, userA)}`;
+    expect((await req(owner, "/api/admin/invites", { method: "POST", body: JSON.stringify({ cohort: "x1", maxUses: 1 }) })).status).toBe(401);
+    expect((await req(adm, "/api/admin/invites", { method: "POST", body: JSON.stringify({ cohort: "Bad Cohort!", maxUses: 1 }) })).status).toBe(400);
+  });
+
+  it("reports pilot metrics, cost and reply times", async () => {
+    const body = await (await req(adm, "/api/admin/pilot?days=30")).json();
+    const rina = body.businesses.find((b: { id: string }) => b.id === bizA);
+    expect(rina).toMatchObject({ cohort: "(tanpa kode)", costIdr: "2" });
+    expect(body.total.businesses).toBe(2);
+    expect(body.targets).toMatchObject({ retentionWeek: 8, costTargetIdr: "3000" });
+    expect(body.replies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "text", n: 1, medianMs: 2000 }),
+        expect.objectContaining({ kind: "photo", n: 1, medianMs: 9000 }),
+      ]),
+    );
+  });
+
+  it("never exposes sender numbers from the webhook inbox to staff", async () => {
+    const { withAdmin } = await import("@bukuwa/db");
+    await expect(withAdmin(db, (tx) => tx.execute(sql`select from_phone from wa_inbound`))).rejects.toThrow();
+  });
+
+  it("lists erasure requests", async () => {
+    const body = await (await req(adm, "/api/admin/erasures")).json();
+    expect(body).toEqual({ pending: [], erased: [] });
   });
 });
 

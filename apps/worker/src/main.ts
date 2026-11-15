@@ -3,12 +3,13 @@ import pg from "pg";
 import PgBoss from "pg-boss";
 import * as schema from "@bukuwa/db";
 import { hashPii, piiKeysFromBase64, toE164, type Db } from "@bukuwa/db";
-import { aiConfigFromEnv, anthropicChatModel, anthropicModel } from "@bukuwa/ai";
+import { aiConfigFromEnv, anthropicChatModel, anthropicModel, pricingFromEnv } from "@bukuwa/ai";
 import { cloudApiMediaFetcher, cloudApiSender, WA_INBOUND_QUEUE } from "@bukuwa/wa";
 import { loadConfig } from "./config.js";
 import { processInbound } from "./inbound.js";
 import { runDueSummaries } from "./summary.js";
 import { runDueTaxNotices } from "./tax.js";
+import { runDueErasures } from "./privacy.js";
 import { linkKeyFromBase64, linkSigner } from "@bukuwa/reports";
 import { fsMediaStore } from "./media/store.js";
 
@@ -17,6 +18,12 @@ const pool = new pg.Pool({ connectionString: config.DATABASE_URL });
 const db = drizzle(pool, { schema }) as unknown as Db;
 
 const keys = piiKeysFromBase64(config.PII_HMAC_KEY, config.PII_ENC_KEY);
+const links = linkSigner({
+  key: linkKeyFromBase64(config.REPORT_LINK_KEY),
+  baseUrl: config.PUBLIC_BASE_URL,
+  reportTtlMinutes: config.REPORT_LINK_TTL_MINUTES,
+  evidenceTtlHours: config.EVIDENCE_LINK_TTL_HOURS,
+});
 const deps = {
   db,
   sender: cloudApiSender({
@@ -51,13 +58,17 @@ const deps = {
     defaultRegime: config.TAX_DEFAULT_REGIME,
     noticeLocalTime: config.TAX_NOTICE_LOCAL_TIME,
     reportLinkTtlMinutes: config.REPORT_LINK_TTL_MINUTES,
-    links: linkSigner({
-      key: linkKeyFromBase64(config.REPORT_LINK_KEY),
-      baseUrl: config.PUBLIC_BASE_URL,
-      reportTtlMinutes: config.REPORT_LINK_TTL_MINUTES,
-      evidenceTtlHours: config.EVIDENCE_LINK_TTL_HOURS,
-    }),
+    links,
   },
+  metering: { pricing: pricingFromEnv(), monthlyAlertIdr: BigInt(config.COST_ALERT_MONTHLY_IDR) },
+  limits: { dailyInbound: config.DAILY_INBOUND_LIMIT },
+  pilot: { inviteRequired: config.PILOT_INVITE_REQUIRED },
+  privacy: {
+    links,
+    reportLinkTtlMinutes: config.REPORT_LINK_TTL_MINUTES,
+    graceDays: config.ERASURE_GRACE_DAYS,
+  },
+  waTemplateCostIdr: config.WA_TEMPLATE_COST_IDR === undefined ? undefined : BigInt(config.WA_TEMPLATE_COST_IDR),
   config: {
     privacyPolicyUrl: config.PRIVACY_POLICY_URL,
     consentVersion: config.CONSENT_VERSION,
@@ -87,4 +98,14 @@ await boss.schedule(TAX_NOTICE_TICK_QUEUE, "*/10 * * * *");
 await boss.work(TAX_NOTICE_TICK_QUEUE, async () => {
   await runDueTaxNotices(deps, new Date());
 });
-console.log(JSON.stringify({ level: "info", event: "worker.started", queues: [WA_INBOUND_QUEUE, SUMMARY_TICK_QUEUE, TAX_NOTICE_TICK_QUEUE] }));
+// UU PDP erasure: requests past their grace period, checked hourly.
+const ERASURE_TICK_QUEUE = "erasures.tick";
+await boss.createQueue(ERASURE_TICK_QUEUE);
+await boss.schedule(ERASURE_TICK_QUEUE, "17 * * * *");
+await boss.work(ERASURE_TICK_QUEUE, async () => {
+  await runDueErasures(deps, new Date());
+});
+if (deps.waTemplateCostIdr === undefined) {
+  console.log(JSON.stringify({ level: "warn", event: "config.wa_template_cost_unset", note: "WA_TEMPLATE_COST_IDR not set: template messages are logged without a cost" }));
+}
+console.log(JSON.stringify({ level: "info", event: "worker.started", queues: [WA_INBOUND_QUEUE, SUMMARY_TICK_QUEUE, TAX_NOTICE_TICK_QUEUE, ERASURE_TICK_QUEUE] }));

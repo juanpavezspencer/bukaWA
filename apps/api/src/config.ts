@@ -28,6 +28,12 @@ const EnvSchema = z.object({
   REVIEW_CONFIDENCE_BELOW: z.coerce.number().min(0).max(1).default(0.7),
   /** Most chart buckets one P&L request may return. */
   PNL_MAX_BUCKETS: z.coerce.number().int().positive().default(120),
+  /** Pilot metrics (spec 10): retention is judged on this week since joining... */
+  PILOT_RETENTION_WEEK: z.coerce.number().int().min(1).max(52).default(8),
+  /** ...with at least this many transactions in it. */
+  PILOT_RETENTION_MIN_TX: z.coerce.number().int().min(1).default(3),
+  /** Monthly model + messaging cost target per active business, rupiah (spec 10: Rp 3.000). */
+  COST_TARGET_MONTHLY_IDR: z.coerce.number().int().positive().default(3000),
 });
 
 export type ApiConfig = z.infer<typeof EnvSchema>;

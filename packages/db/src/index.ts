@@ -5,3 +5,4 @@ export { migrationsFolder } from "./migrate.js";
 export * from "./pii.js";
 export * from "./media-store.js";
 export * from "./auth.js";
+export * from "./privacy.js";

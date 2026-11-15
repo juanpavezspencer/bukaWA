@@ -85,6 +85,20 @@
       "when": 1794585705921,
       "tag": "0011_dashboard_auth_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794721240397,
+      "tag": "0012_pilot_and_privacy",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794721246111,
+      "tag": "0013_pilot_and_privacy_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -3,6 +3,7 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { z } from "zod/v4";
 import { maskSensitiveIds } from "@bukuwa/idn";
 import type { Effort } from "./config.js";
+import { recordUsage } from "./metering.js";
 
 /** An image or PDF sent alongside the text. Images can't be masked; see vision.ts. */
 export interface Attachment {
@@ -21,6 +22,24 @@ export interface StructuredRequest<T> {
   attachments?: Attachment[];
   schema: z.ZodType<T>;
   maxTokens: number;
+}
+
+/** Token counts from one API response (spec 5: per-business cost metrics). */
+export interface Usage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export function usageOf(u: Anthropic.Usage | null | undefined): Usage | undefined {
+  if (!u) return undefined;
+  return {
+    inputTokens: u.input_tokens ?? 0,
+    outputTokens: u.output_tokens ?? 0,
+    cacheReadTokens: u.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+  };
 }
 
 export interface StructuredResult<T> {
@@ -68,6 +87,8 @@ export function anthropicModel(client: Anthropic = new Anthropic()): StructuredM
         system: [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }],
         messages: [{ role: "user", content: [...(req.attachments ?? []).map(toBlock), { type: "text", text: maskSensitiveIds(req.user) }] }],
       });
+      // Every response is billed, refusals and bad output included.
+      recordUsage(response.model, usageOf(response.usage));
       if (response.stop_reason === "refusal") {
         throw new ModelRefusalError(response.stop_details?.category ?? null);
       }

@@ -6,3 +6,4 @@ export * from "./pdf.js";
 export * from "./xlsx.js";
 export * from "./generate.js";
 export * from "./serve.js";
+export * from "./data-export.js";

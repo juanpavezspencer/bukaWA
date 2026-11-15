@@ -162,7 +162,10 @@ export async function ensureTaxNoticeSchedule(tx: Tx, businessId: string, timezo
  * summaries. Months with no turnover and no tax are skipped quietly.
  */
 export async function runDueTaxNotices(
-  deps: Pick<InboundDeps, "db" | "sender" | "keys" | "log"> & { tax: TaxDeps },
+  deps: Pick<InboundDeps, "db" | "sender" | "keys" | "log"> & {
+    /** Meta's per-message price for a utility template, logged on messages.cost_idr (config). */
+    waTemplateCostIdr?: bigint;
+  } & { tax: TaxDeps },
   now: Date,
 ): Promise<{ sent: number; skipped: number }> {
   const log = deps.log ?? ((e: Record<string, unknown>) => console.log(JSON.stringify(e)));
@@ -197,7 +200,7 @@ export async function runDueTaxNotices(
         params: noticeParams(t, b!.name),
         buttonPayloads: [`report:${month}:pdf`],
       };
-      await tx.insert(messages).values({ businessId, direction: "outbound", type: "template", body: messageLogBody(msg), templateName: msg.name });
+      await tx.insert(messages).values({ businessId, direction: "outbound", type: "template", body: messageLogBody(msg), templateName: msg.name, costIdr: deps.waTemplateCostIdr ?? null });
       return { msg, phone: decryptPii(deps.keys, b!.ownerPhoneEnc), month };
     });
     if (!out) continue;

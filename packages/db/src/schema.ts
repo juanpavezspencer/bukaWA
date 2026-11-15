@@ -104,6 +104,9 @@ export const businesses = pgTable("businesses", {
   timezone: text("timezone").notNull().default("Asia/Jakarta"),
   plan: text("plan").notNull().default("trial"),
   trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+  /** Pilot cohort from the invite code used at onboarding (null = joined without one). */
+  cohort: text("cohort"),
+  inviteCode: text("invite_code"),
   createdAt: createdAt(),
 });
 
@@ -546,6 +549,91 @@ export const onboardingSessions = pgTable("onboarding_sessions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Metered model calls (spec 5: per-business cost metrics). One row per LLM or
+ * speech-to-text call. Cost is in micro-rupiah (integer, 1 rupiah = 1,000,000)
+ * because a single Haiku call costs well under a rupiah; it is computed in code
+ * from the configured price table at the time of the call. Insert-only.
+ */
+export const usageEvents = pgTable(
+  "usage_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id),
+    /** "llm" | "stt" */
+    kind: text("kind").notNull(),
+    model: text("model").notNull(),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+    cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+    costMicroIdr: bigint("cost_micro_idr", { mode: "bigint" }).notNull(),
+    waMessageId: text("wa_message_id"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("usage_events_business_created_idx").on(t.businessId, t.createdAt),
+    check("usage_events_cost", sql`${t.costMicroIdr} >= 0`),
+    check("usage_events_kind", sql`${t.kind} in ('llm', 'stt')`),
+  ],
+);
+
+/**
+ * Pilot invite codes (milestone 8). Staff create them in the admin console;
+ * onboarding asks for one when PILOT_INVITE_REQUIRED is on. Not tenant-scoped:
+ * a code exists before any business does.
+ */
+export const pilotInvites = pgTable(
+  "pilot_invites",
+  {
+    code: text("code").primaryKey(),
+    cohort: text("cohort").notNull(),
+    maxUses: integer("max_uses").notNull(),
+    uses: integer("uses").notNull().default(0),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Admin phone hash. */
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("pilot_invites_code", sql`${t.code} ~ '^[A-Z0-9]{4,12}$'`),
+    check("pilot_invites_uses", sql`${t.uses} >= 0 and ${t.uses} <= ${t.maxUses}`),
+    check("pilot_invites_max", sql`${t.maxUses} between 1 and 1000`),
+  ],
+);
+
+/**
+ * "hapus data" (UU PDP right to erasure). The owner confirms in chat; after
+ * the grace period the worker runs erase_business(), which deletes every row
+ * of the business, this one included. Cancellable until then.
+ */
+export const erasureRequests = pgTable(
+  "erasure_requests",
+  {
+    businessId: uuid("business_id")
+      .primaryKey()
+      .references(() => businesses.id),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  },
+  (t) => [index("erasure_requests_due_idx").on(t.scheduledFor).where(sql`${t.cancelledAt} is null`)],
+);
+
+/**
+ * Proof that an erasure ran, kept after the business is gone. Holds no
+ * personal data: the old business id, timestamps and row counts only.
+ */
+export const erasureLog = pgTable("erasure_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  subjectId: uuid("subject_id").notNull(),
+  requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
+  executedAt: timestamp("executed_at", { withTimezone: true }).notNull().defaultNow(),
+  rowCounts: jsonb("row_counts").notNull(),
+});
+
 /** Every table that carries business_id and is protected by RLS. */
 export const TENANT_TABLES = [
   "businesses",
@@ -564,4 +652,6 @@ export const TENANT_TABLES = [
   "login_tokens",
   "dashboard_sessions",
   "capture_reviews",
+  "usage_events",
+  "erasure_requests",
 ] as const;

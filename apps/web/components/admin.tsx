@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 
 export function AdminShell({ children }: { children: ReactNode }) {
   const path = usePathname();
-  const nav: Array<[string, string]> = [["/admin", "Bisnis"], ["/admin/review", "Antrian review"]];
+  const nav: Array<[string, string]> = [["/admin", "Bisnis"], ["/admin/pilot", "Pilot"], ["/admin/review", "Antrian review"]];
   return (
     <>
       <header className="border-b border-line bg-surface">

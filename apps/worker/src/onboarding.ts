@@ -3,15 +3,21 @@ import type { InboundInput, OutboundMessage } from "@bukuwa/wa";
 
 /*
  * F1 WhatsApp onboarding as a pure state machine: (state, input) -> (state, replies).
- * Order: consent first (UU PDP: no personal data is kept before the owner agrees),
- * then business name, type, opening cash, and a confirm card. Nothing is created
- * until the owner confirms the summary.
+ * Order: during the pilot an invite code first (looked up by the caller and
+ * passed in), then consent (UU PDP: no personal data is kept before the owner
+ * agrees), then business name, type, opening cash, and a confirm card. Nothing
+ * is created until the owner confirms the summary.
  */
 
 export type BusinessType = "fnb" | "fashion" | "retail" | "other";
 
 export interface OnboardingState {
-  step: "new" | "awaiting_consent" | "declined" | "awaiting_name" | "awaiting_type" | "awaiting_cash" | "awaiting_confirm" | "done";
+  step: "new" | "awaiting_invite" | "awaiting_consent" | "declined" | "awaiting_name" | "awaiting_type" | "awaiting_cash" | "awaiting_confirm" | "done";
+  /** Pilot invite accepted before consent. */
+  inviteCode?: string;
+  cohort?: string;
+  /** Wrong codes so far; after MAX_INVITE_ATTEMPTS the caller stops looking codes up. */
+  inviteAttempts?: number;
   consentAt?: string;
   name?: string;
   type?: BusinessType;
@@ -23,12 +29,23 @@ export interface OnboardingResult {
   state: OnboardingState;
   replies: OutboundMessage[];
   /** Present once the owner confirmed: the caller creates the business. */
-  complete?: { name: string; type: BusinessType; openingCash: bigint; consentAt: string };
+  complete?: { name: string; type: BusinessType; openingCash: bigint; consentAt: string; inviteCode?: string; cohort?: string };
 }
 
 export interface OnboardingOptions {
   privacyPolicyUrl: string;
+  /** Pilot gating: `found` is the usable invite in this message, looked up by the caller. */
+  invite?: { required: boolean; found: { code: string; cohort: string } | null };
   now?: () => Date;
+}
+
+export const MAX_INVITE_ATTEMPTS = 5;
+
+/** Whether the caller should look up an invite code in this message. */
+export function wantsInviteCode(state: OnboardingState, required: boolean): boolean {
+  if (!required || state.inviteCode) return false;
+  if (state.step === "awaiting_invite") return (state.inviteAttempts ?? 0) < MAX_INVITE_ATTEMPTS;
+  return state.step === "new" || state.step === "declined" || state.step === "done";
 }
 
 const TYPES: Array<{ id: BusinessType; title: string; keywords: RegExp }> = [
@@ -52,7 +69,9 @@ function consentCard(opts: OnboardingOptions, greet: boolean): OutboundMessage {
     body:
       intro +
       "Sebelum mulai, aku perlu izin kamu untuk menyimpan dan memproses data usaha kamu (nomor WA, transaksi, foto nota). " +
-      `Data disimpan di Indonesia dan tidak dijual ke siapa pun. Kebijakan privasi lengkap: ${opts.privacyPolicyUrl}\n\n` +
+      "Data disimpan di Indonesia dan tidak dijual ke siapa pun. Untuk membaca chat, foto dan voice note, isinya diproses penyedia AI di luar negeri " +
+      "(NIK/NPWP di teks disamarkan dulu, dan tidak dipakai untuk melatih AI). Kamu bisa minta salinan atau hapus data kapan saja. " +
+      `Kebijakan privasi lengkap: ${opts.privacyPolicyUrl}\n\n` +
       "Kamu setuju?",
     buttons: [
       { id: "consent_yes", title: "Setuju" },
@@ -60,6 +79,21 @@ function consentCard(opts: OnboardingOptions, greet: boolean): OutboundMessage {
     ],
   };
 }
+
+const askInvite: OutboundMessage = {
+  kind: "text",
+  body:
+    "Halo! 👋 Aku BukuWA, asisten pembukuan usaha kamu di WhatsApp. Saat ini BukuWA lagi uji coba terbatas, " +
+    "jadi perlu kode undangan. Kirim kodenya ya, contoh: KODE BUKU42",
+};
+const inviteNotFound = (left: number): OutboundMessage => ({
+  kind: "text",
+  body: `Kodenya nggak ketemu, sudah kedaluwarsa, atau kuotanya habis. Cek lagi ya (sisa ${left} kali coba).`,
+});
+const inviteLocked: OutboundMessage = {
+  kind: "text",
+  body: "Kodenya masih belum cocok. Hubungi tim BukuWA yang ngasih undangan ya, nanti dibantu. 🙏",
+};
 
 const askName: OutboundMessage = { kind: "text", body: "Sip, makasih! 🙏 Nama usaha kamu apa?" };
 const askNameAgain: OutboundMessage = {
@@ -133,17 +167,39 @@ export function onboardingStep(state: OnboardingState, input: InboundInput, opts
   const now = opts.now ?? (() => new Date());
   const text = input.text?.trim() ?? "";
 
+  const invite = state.inviteCode ? { inviteCode: state.inviteCode, cohort: state.cohort } : {};
+  const gated = Boolean(opts.invite?.required) && !state.inviteCode;
+
   switch (state.step) {
     case "new":
     case "declined":
-    case "done":
-      return { state: { step: "awaiting_consent" }, replies: [consentCard(opts, true)] };
+    case "done": {
+      if (!gated) return { state: { step: "awaiting_consent", ...invite }, replies: [consentCard(opts, true)] };
+      const found = opts.invite?.found;
+      if (found) {
+        return { state: { step: "awaiting_consent", inviteCode: found.code, cohort: found.cohort }, replies: [consentCard(opts, true)] };
+      }
+      return { state: { step: "awaiting_invite", inviteAttempts: 0 }, replies: [askInvite] };
+    }
+
+    case "awaiting_invite": {
+      const found = opts.invite?.found;
+      if (found) {
+        return { state: { step: "awaiting_consent", inviteCode: found.code, cohort: found.cohort }, replies: [consentCard(opts, false)] };
+      }
+      const attempts = (state.inviteAttempts ?? 0) + 1;
+      if (attempts > MAX_INVITE_ATTEMPTS) return { state, replies: [] };
+      return {
+        state: { ...state, inviteAttempts: attempts },
+        replies: [attempts === MAX_INVITE_ATTEMPTS ? inviteLocked : inviteNotFound(MAX_INVITE_ATTEMPTS - attempts)],
+      };
+    }
 
     case "awaiting_consent": {
       const yes = input.replyId === "consent_yes" || (!input.replyId && YES.test(text));
       const no = input.replyId === "consent_no" || (!input.replyId && NO.test(text));
       if (yes) {
-        return { state: { step: "awaiting_name", consentAt: now().toISOString() }, replies: [askName] };
+        return { state: { ...invite, step: "awaiting_name", consentAt: now().toISOString() }, replies: [askName] };
       }
       if (no) {
         return {
@@ -186,11 +242,11 @@ export function onboardingStep(state: OnboardingState, input: InboundInput, opts
         return {
           state: { ...state, step: "done" },
           replies: [welcome(state.name!, cash)],
-          complete: { name: state.name!, type: state.type!, openingCash: cash, consentAt: state.consentAt! },
+          complete: { name: state.name!, type: state.type!, openingCash: cash, consentAt: state.consentAt!, ...invite },
         };
       }
       if (edit) {
-        return { state: { step: "awaiting_name", consentAt: state.consentAt }, replies: [{ kind: "text", body: "Oke, kita ulang ya. Nama usaha kamu apa?" }] };
+        return { state: { ...invite, step: "awaiting_name", consentAt: state.consentAt }, replies: [{ kind: "text", body: "Oke, kita ulang ya. Nama usaha kamu apa?" }] };
       }
       return { state, replies: [confirmCard(state)] };
     }
